@@ -1,0 +1,33 @@
+# 本机环境目录与共享技能链接；仓库内两个 Oriel skill 正常纳入版本管理。
+/.aws/
+/.codex/
+/.agents/skills/ui-frontend-workflow
+
+# 原始会话、讨论原稿归档及已回退实现的历史资料。
+/docs/AISessions/
+/docs/archive/
+/docs/architecture.md
+/docs/validation.md
+/docs/decisions/0001-desktop-foundation.md
+
+# 当前本地界面参考图；不忽略整个图片目录，保留正式文档图片的纳入空间。
+/docs/img/设计*.jpg
+/docs/img/设计*.webp
+
+# 依赖、构建与自动验证产物。
+node_modules/
+/dist/
+/target/
+/src-tauri/target/
+/src-tauri/gen/
+/test-results/
+/playwright-report/
+
+# 本机环境变量、日志及系统杂项；示例环境配置可以纳入仓库。
+.env
+.env.*
+!.env.example
+!.env.sample
+*.log
+.DS_Store
+Thumbs.db
