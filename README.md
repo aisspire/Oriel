@@ -31,13 +31,23 @@ npm run tauri build
 
 在目标平台的开发环境中执行桌面构建；Windows 安装包请在 Windows 环境构建。系统前置条件见 [Tauri 官方说明](https://v2.tauri.app/start/prerequisites/)。项目不会自动安装系统库或更改全局工具链。
 
+仅生成 Windows NSIS 安装包时，在 Windows 项目目录执行：
+
+```bash
+npm run tauri -- build --bundles nsis -- --locked
+```
+
+默认产物位于 `src-tauri/target/release/`，其中 `oriel.exe` 可直接运行，安装包位于 `bundle/nsis/`。设置 `CARGO_TARGET_DIR` 后，产物改为写入指定目录。打包工具缓存保存在该构建目录的 `.tauri/` 中。
+
+Windows 与 WSL 不共用 `node_modules`。本次 Windows 构建使用 `target/windows-stage/` 作为独立工作目录，并按同一锁文件安装项目依赖；产物位于 `target/windows/release/`。这些目录均为本地生成内容，不纳入版本管理。
+
 ## 本版范围
 
 - 单侧边栏只提供首页入口；未添加不可用的工具、设置或插件入口。
 - 首页展示 Oriel 动效和真实空工具状态，不包含示例业务数据。
 - 外观选择仅作为本地界面偏好保存；存储不可用时仍可切换当前页面外观。
 - 动效可暂停，系统启用减少动态效果时自动静态展示；页面进入后台时暂停动画。
-- 本轮已完成前端生产构建与类型检查，按要求未运行测试；未运行桌面应用或构建桌面安装包。
+- 已完成前端生产构建与类型检查，并于 2026-10-21 构建 Windows x64 Release 程序和 NSIS 安装包、启动桌面应用；按要求未运行测试。
 
 ## 目录
 

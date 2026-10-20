@@ -65,8 +65,10 @@
 
 前端为 Vue 3、TypeScript 与 Vite，桌面为最小 Tauri 2 / Rust 外壳。所有视觉资源本地加载；Tauri 不声明宿主命令、业务插件或权限能力。
 
-本轮已执行 `npm run build`，类型检查与前端生产构建通过；已生成 npm 与 Cargo 依赖锁文件及平台图标。按用户要求未运行测试，也未进行浏览器交互验证、桌面运行或桌面安装包构建。
+初版开发已执行 `npm run build`，类型检查与前端生产构建通过；已生成 npm 与 Cargo 依赖锁文件及平台图标。
 
-代码中的响应式、键盘焦点及减少动效支持属于实现内容，不等于已完成浏览器或桌面行为验证；前端生产构建通过不代表桌面已验证。
+2026-10-21 根据后续打包与启动要求，使用现有 Windows Node.js、Rust MSVC、Visual Studio 与 WebView2 环境，完成 Windows x64 Release 程序及 NSIS 安装包构建，并启动生成的桌面应用。Windows 项目依赖使用独立构建工作目录，沿用 npm 与 Cargo 锁文件；打包工具缓存限定在项目构建目录内。
+
+按用户要求未运行测试，也未进行浏览器或桌面功能交互验证。代码中的响应式、键盘焦点及减少动效支持属于实现内容；构建成功、进程启动和窗口创建不等于这些行为已经完成验证。
 
 运行方式见[项目说明](../../README.md)。Tauri 工程组织参考[官方项目创建说明](https://v2.tauri.app/start/create-project/)与[配置说明](https://v2.tauri.app/develop/configuration-files/)。
