@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" fill="none">
+  <title>Oriel — O 与窗</title>
+  <defs>
+    <linearGradient id="base" x1="72" y1="24" x2="440" y2="512" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#30323D"/>
+      <stop offset="1" stop-color="#171820"/>
+    </linearGradient>
+    <linearGradient id="mint" x1="136" y1="120" x2="238" y2="246" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#E0F7DD"/>
+      <stop offset="1" stop-color="#B1DCCA"/>
+    </linearGradient>
+    <linearGradient id="peach" x1="274" y1="120" x2="376" y2="246" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFE7D5"/>
+      <stop offset="1" stop-color="#EDBCA6"/>
+    </linearGradient>
+    <linearGradient id="lilac" x1="136" y1="266" x2="238" y2="392" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#E2DCF7"/>
+      <stop offset="1" stop-color="#BDB5DE"/>
+    </linearGradient>
+    <linearGradient id="blue" x1="274" y1="266" x2="376" y2="392" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#DBEAFB"/>
+      <stop offset="1" stop-color="#ADC6E6"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="120" fill="url(#base)"/>
+  <rect x="1" y="1" width="510" height="510" rx="119" stroke="white" stroke-opacity=".12" stroke-width="2"/>
+  <path d="M246 104H226C160 104 112 152 112 218V246H176V222C176 190 194 172 226 172H246V104Z" fill="url(#mint)"/>
+  <path d="M266 104H286C352 104 400 152 400 218V246H336V222C336 190 318 172 286 172H266V104Z" fill="url(#peach)"/>
+  <path d="M112 266V294C112 360 160 408 226 408H246V340H226C194 340 176 322 176 290V266H112Z" fill="url(#lilac)"/>
+  <path d="M400 266V294C400 360 352 408 286 408H266V340H286C318 340 336 322 336 290V266H400Z" fill="url(#blue)"/>
+</svg>
