@@ -15,13 +15,13 @@
       {
         "label": "main",
         "title": "Oriel",
-        "width": 1440,
-        "height": 960,
-        "minWidth": 360,
-        "minHeight": 560,
+        "width": 1560,
+        "height": 1000,
+        "minWidth": 480,
+        "minHeight": 600,
         "center": true,
         "decorations": false,
-        "shadow": false,
+        "shadow": true,
         "backgroundColor": "#eeedf1"
       }
     ],

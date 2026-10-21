@@ -71,7 +71,7 @@ onMounted(() => { void reload(true) })
       </div>
     </aside>
     <main id="workspace" class="workspace" :class="{ 'has-web-entry': current }" tabindex="-1">
-      <WindowChrome />
+      <WindowChrome v-if="!current" />
       <div v-if="error || workspace?.diagnostics.length" class="workspace-notice" role="alert">
         <p v-if="error">{{ error }}</p>
         <p v-for="message in workspace?.diagnostics" :key="message">{{ message }}</p>

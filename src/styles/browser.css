@@ -6,19 +6,25 @@
 .sidebar-bottom { gap: 8px; }
 .site-monogram { font-size: 17px; font-weight: 600; line-height: 1; }
 .add-webpage { margin-top: 4px; }
-.workspace.has-web-entry { flex-direction: column; height: 100svh; min-height: 0; padding: 44px 0 0; overflow: hidden; }
+.workspace.has-web-entry { flex-direction: column; height: 100svh; min-height: 0; padding: 0; overflow: hidden; }
 .browser-view { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; width: 100%; }
-.browser-toolbar { display: flex; align-items: center; gap: 12px; flex-shrink: 0; padding: 12px 20px; border-bottom: 1px solid var(--line); }
+.browser-toolbar { display: flex; align-items: center; height: 44px; flex-shrink: 0; padding: 0 0 0 10px; border-bottom: 1px solid var(--line); background: var(--shell); user-select: none; }
 .navigation-buttons, .browser-options { display: flex; align-items: center; gap: 2px; }
-.plain-icon { display: inline-grid; place-items: center; flex-shrink: 0; width: 36px; height: 36px; border: 0; padding: 0; border-radius: 8px; background: transparent; color: var(--text-secondary); }
-.plain-icon svg { width: 19px; height: 19px; }
+.plain-icon { display: inline-grid; place-items: center; flex-shrink: 0; width: 32px; height: 32px; border: 0; padding: 0; border-radius: 7px; background: transparent; color: var(--text-secondary); transition: background 140ms, color 140ms; }
+.plain-icon svg { width: 17px; height: 17px; }
 .plain-icon:hover:not(:disabled) { background: var(--surface); color: var(--text-primary); }
 .plain-icon:active:not(:disabled) { background: var(--line); }
-.address-field { display: flex; flex: 1; align-items: center; gap: 10px; min-width: 0; height: 40px; padding-left: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
-.address-field:focus-within { border-color: var(--focus); }
-.address-field > svg { width: 17px; height: 17px; color: var(--text-secondary); }
+.address-bar-form { display: flex; flex: 1; min-width: 140px; max-width: 720px; margin: 0 8px; }
+.address-field { display: flex; flex: 1; align-items: center; gap: 8px; min-width: 0; height: 32px; padding: 0 4px 0 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); transition: border-color 150ms, box-shadow 150ms; }
+.address-field:focus-within { border-color: var(--focus); box-shadow: 0 0 0 2px var(--focus); }
+.address-field > svg { width: 16px; height: 16px; color: var(--text-secondary); }
 .address-field input { width: 100%; min-width: 0; height: 100%; padding: 0; border: 0; outline: none; background: transparent; color: var(--text-primary); font: inherit; font-size: 13px; }
 .address-field input:focus-visible { outline: none; }
+.address-field .inline-go { width: 26px; height: 26px; border-radius: 5px; }
+.address-field .inline-go svg { width: 15px; height: 15px; }
+.toolbar-drag-spacer { flex: 1; min-width: 10px; height: 100%; cursor: default; }
+.browser-options { margin-right: 4px; }
+.browser-window-controls { display: flex; flex-shrink: 0; margin-left: auto; }
 .web-surface { position: relative; flex: 1; min-height: 1px; overflow: hidden; background: var(--surface-solid); }
 .browser-empty { display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 12px; height: 100%; padding: 28px; color: var(--text-secondary); font-size: 14px; text-align: center; }
 .browser-empty > svg { width: 36px; height: 36px; opacity: .65; }
@@ -55,8 +61,9 @@
 .delete-confirmation { margin-top: 20px; padding-top: 12px; border-top: 1px solid var(--line); font-size: 13px; line-height: 1.6; }
 .password-dialog > p:not(.field-help) { font-size: 14px; line-height: 1.7; }
 @media (max-width: 680px) {
-  .browser-toolbar { flex-wrap: wrap; gap: 8px; padding: 8px 12px; }
-  .address-field { order: 3; flex-basis: 100%; }
-  .browser-options { margin-left: auto; }
+  .browser-toolbar { height: auto; min-height: 44px; flex-wrap: wrap; padding: 4px 0 6px 8px; gap: 4px 6px; }
+  .address-bar-form { order: 3; flex-basis: 100%; max-width: none; margin: 2px 8px 0 0; }
+  .toolbar-drag-spacer { display: none; }
+  .browser-window-controls { margin-left: auto; }
 }
 @media (prefers-reduced-motion: reduce) { .load-progress.is-loading { animation: none; } }

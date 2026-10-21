@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onUnmounted, ref, watch, useTemplateRef } from 'vue'
 import AppIcon from '../../../src/components/AppIcon.vue'
+import WindowControls from '../../../src/components/WindowControls.vue'
 import { useWebSession } from '../../../src/composables/useWebSession'
 import { type WebEntry } from '../../../src/lib/workspace'
 
@@ -41,23 +42,27 @@ onUnmounted(() => passwords.value?.close())
 
 <template>
   <section class="browser-view" :aria-label="entry.title">
-    <form class="browser-toolbar" aria-label="浏览工具栏" @submit.prevent="navigate">
+    <header class="browser-toolbar" aria-label="浏览工具栏">
       <div class="navigation-buttons">
         <button class="plain-icon" type="button" aria-label="上一页" title="上一页" :disabled="!available || !state.canGoBack" @click="browse('back')"><AppIcon name="back" /></button>
         <button class="plain-icon" type="button" aria-label="下一页" title="下一页" :disabled="!available || !state.canGoForward" @click="browse('forward')"><AppIcon name="forward" /></button>
         <button class="plain-icon" type="button" :aria-label="state.loading ? '停止加载' : '刷新'" :title="state.loading ? '停止加载' : '刷新'" :disabled="!available || !state.url" @click="browse(state.loading ? 'stop' : 'reload')"><AppIcon :name="state.loading ? 'close' : 'refresh'" /></button>
       </div>
-      <div class="address-field">
-        <AppIcon name="globe" />
-        <input v-model="address" aria-label="网页地址" type="text" placeholder="输入网页地址" spellcheck="false" autocomplete="off" :disabled="!supported" @input="dirtyAddress = true" @keydown.esc="address = state.url; dirtyAddress = false" />
-        <button class="plain-icon" type="submit" aria-label="打开网页" title="打开网页" :disabled="!available || !address.trim()"><AppIcon name="forward" /></button>
-      </div>
+      <form class="address-bar-form" @submit.prevent="navigate">
+        <div class="address-field">
+          <AppIcon name="globe" />
+          <input v-model="address" aria-label="网页地址" type="text" placeholder="输入网页地址" spellcheck="false" autocomplete="off" :disabled="!supported" @input="dirtyAddress = true" @keydown.esc="address = state.url; dirtyAddress = false" />
+          <button class="plain-icon inline-go" type="submit" aria-label="打开网页" title="打开网页" :disabled="!available || !address.trim()"><AppIcon name="forward" /></button>
+        </div>
+      </form>
+      <div class="toolbar-drag-spacer" data-tauri-drag-region></div>
       <div class="browser-options">
         <button class="plain-icon" type="button" aria-label="账号密码" title="账号密码" :disabled="!available" @click="openPasswords"><AppIcon name="key" /></button>
         <button v-if="entry.editable" class="plain-icon" type="button" aria-label="网页设置" title="网页设置" :disabled="!writable || busy" @click="emit('edit')"><AppIcon name="settings" /></button>
         <button v-else class="plain-icon" type="button" aria-label="浏览设置" title="浏览设置" :disabled="!writable || busy" @click="emit('settings')"><AppIcon name="settings" /></button>
       </div>
-    </form>
+      <WindowControls class="browser-window-controls" />
+    </header>
     <div v-if="error || state.error" class="browser-error" role="alert">
       <span>{{ error || state.error }}</span><button class="text-button" type="button" :disabled="busy" @click="state.error ? run('web_action', { action: 'reload' }) : (error = '', synchronize())">重试</button>
     </div>
