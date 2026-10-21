@@ -3,6 +3,9 @@
 /.codex/
 /.agents/skills/ui-frontend-workflow
 
+# 工作区内的独立工具仓库；由各自的 Git 仓库管理，不作为子模块或宿主源码提交。
+/plugins/external/tether/
+
 # 原始会话、讨论原稿归档及已回退实现的历史资料。
 /docs/AISessions/
 /docs/archive/
