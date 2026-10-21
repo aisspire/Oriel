@@ -1,4 +1,6 @@
-//! Platform-independent registration and local configuration for Oriel web views.
+//! Platform-independent registration and local configuration for Oriel.
+pub mod window_state;
+
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashSet,

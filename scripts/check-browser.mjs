@@ -136,6 +136,30 @@ app.stderr.on('data', data => { nativeErrors += data })
 const connections = []
 const results = []
 function passed(name) { results.push(name); process.stdout.write(`PASS ${name}\n`) }
+
+async function closeForWindowState(connection) {
+  const port = await activePort(join(data, 'shell'))
+  // Let CDP return before destroying its own WebView; force-kill does not exercise close handlers.
+  await connection.evaluate('setTimeout(() => { void window.__TAURI__.window.getCurrentWindow().close() }, 100)')
+  await until(() => app.exitCode !== null || app.signalCode !== null, 'normal application close')
+  connection.close()
+  // WebView2 can outlive the host briefly; do not reconnect to a retiring profile.
+  if (port) await until(async () => {
+    try { await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(1000) }); return false }
+    catch { return true }
+  }, 'shell browser shutdown')
+  return JSON.parse(await readFile(join(data, 'window-state.json'), 'utf8'))
+}
+
+async function restartForWindowState() {
+  app = spawn(executable, [], appOptions)
+  app.stderr.on('data', data => { nativeErrors += data })
+  const connection = await connectProfile(join(data, 'shell'), target => target.url.startsWith('http://127.0.0.1:1420'))
+  connections.push(connection)
+  await until(() => connection.evaluate(`Boolean(document.querySelector('button[aria-label="最大化"],button[aria-label="还原窗口"]'))`), 'restored window controls')
+  return connection
+}
+
 let exitCode = 0
 let passwordSaveAndFill = 'requires manual acceptance'
 try {
@@ -151,6 +175,10 @@ try {
   assert.equal(workspace.browserSupported, true)
   assert.equal(workspace.configPath, join(data, 'workspace.json'))
   passed('isolated native startup and builtin registration')
+  const initialWindow = await shell.evaluate('({ width: innerWidth, height: innerHeight, availableHeight: screen.availHeight })')
+  assert(initialWindow.width <= 1100 && initialWindow.height <= 760)
+  assert(initialWindow.height <= initialWindow.availableHeight)
+  passed('smaller first window fits the screen work area')
 
   await click('添加网页')
   await until(() => shell.evaluate(`Boolean(document.querySelector('dialog[open] input'))`), 'add webpage dialog')
@@ -243,6 +271,7 @@ try {
   const secondEntry = second.entries.find(item => item.title === 'Separate profile')
   const secondPage = await connectProfile(join(data, 'web-profiles', secondEntry.id), target => target.url.startsWith(fixtureUrl))
   connections.push(secondPage)
+  await until(() => secondPage.evaluate('location.pathname === "/second" && document.readyState === "complete"'), 'second webpage loaded before reading its cookies')
   assert.equal(await secondPage.evaluate('document.cookie'), '')
   passed('independent entry browser profiles')
 
@@ -310,19 +339,69 @@ try {
   await readFile(join(data, 'web-profiles', secondEntry.id, 'EBWebView', 'Local State'))
   passed('webpage removal through UI preserves browser data')
 
+  // Resize this isolated window through Win32, without granting extra frontend permissions.
+  const resizeScript = `Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public class OrielWindowCheck {
+  [StructLayout(LayoutKind.Sequential)] public struct Rect { public int left, top, right, bottom; }
+  [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
+  [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr hwnd);
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hwnd, out Rect rect);
+  [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr hwnd, out Rect rect);
+  [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hwnd, IntPtr after, int x, int y, int width, int height, uint flags);
+}
+'@
+[void][OrielWindowCheck]::SetThreadDpiAwarenessContext([IntPtr](-4))
+$handle = (Get-Process -Id ${app.pid}).MainWindowHandle
+$outer = New-Object OrielWindowCheck+Rect
+$inner = New-Object OrielWindowCheck+Rect
+[void][OrielWindowCheck]::GetWindowRect($handle, [ref]$outer)
+[void][OrielWindowCheck]::GetClientRect($handle, [ref]$inner)
+$scale = [OrielWindowCheck]::GetDpiForWindow($handle) / 96.0
+$width = [int](900 * $scale) + $outer.right - $outer.left - $inner.right
+$height = [int](660 * $scale) + $outer.bottom - $outer.top - $inner.bottom
+if (![OrielWindowCheck]::SetWindowPos($handle, [IntPtr]::Zero, 120, 100, $width, $height, 20)) { throw 'Could not resize test window' }
+`
+  await promisify(execFile)('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', resizeScript], { timeout: 10000 })
+  await until(() => shell.evaluate('Math.abs(innerWidth - 900) <= 1 && Math.abs(innerHeight - 660) <= 1'), 'resized normal bounds')
+  const savedWindow = await closeForWindowState(shell)
+  assert(Math.abs(savedWindow.width - 900) <= 1 && Math.abs(savedWindow.height - 660) <= 1)
+  assert.equal(savedWindow.x, 120)
+  assert.equal(savedWindow.y, 100)
+  assert.equal(savedWindow.maximized, false)
   for (const connection of connections) { try { connection.close() } catch {} }
-  app.kill()
-  await until(() => app.exitCode !== null || app.signalCode !== null, 'application exit')
-  app = spawn(executable, [], appOptions)
-  app.stderr.on('data', data => { nativeErrors += data })
-  const restarted = await connectProfile(join(data, 'shell'), target => target.url.startsWith('http://127.0.0.1:1420'))
-  connections.push(restarted)
+  let restarted = await restartForWindowState()
   await until(() => restarted.evaluate(`Boolean(window.__TAURI__?.core)`), 'restarted host API')
+  await until(() => restarted.evaluate('Math.abs(innerWidth - 900) <= 1 && Math.abs(innerHeight - 660) <= 1'), 'restored normal size')
+  passed('window size and position survive normal close and restart')
   const restored = await restarted.evaluate(`window.__TAURI__.core.invoke('workspace_snapshot')`)
   assert(restored.entries.some(item => item.id === entry.id && item.title === entry.title))
   assert(!restored.entries.some(item => item.id === secondEntry.id))
   assert.equal(restored.defaultProxy.mode, 'custom')
   passed('application restart restores local entries and proxy configuration')
+
+  await restarted.evaluate('window.__TAURI__.window.getCurrentWindow().toggleMaximize()')
+  await until(() => restarted.evaluate('window.__TAURI__.window.getCurrentWindow().isMaximized()'), 'maximized window')
+  const maximizedWindow = await closeForWindowState(restarted)
+  assert.equal(maximizedWindow.maximized, true)
+  assert(Math.abs(maximizedWindow.width - savedWindow.width) <= 1)
+  assert(Math.abs(maximizedWindow.height - savedWindow.height) <= 1)
+  restarted = await restartForWindowState()
+  assert(await restarted.evaluate('window.__TAURI__.window.getCurrentWindow().isMaximized()'))
+  await restarted.evaluate('window.__TAURI__.window.getCurrentWindow().toggleMaximize()')
+  await until(() => restarted.evaluate('Math.abs(innerWidth - 900) <= 1 && Math.abs(innerHeight - 660) <= 1'), 'normal bounds after restoring maximized startup')
+  passed('maximized startup retains the previous normal window size')
+
+  await restarted.evaluate('window.__TAURI__.window.getCurrentWindow().minimize()')
+  const minimizedWindow = await closeForWindowState(restarted)
+  assert.equal(minimizedWindow.maximized, false)
+  assert(Math.abs(minimizedWindow.width - 900) <= 1 && Math.abs(minimizedWindow.height - 660) <= 1)
+  assert.equal(minimizedWindow.x, savedWindow.x)
+  assert.equal(minimizedWindow.y, savedWindow.y)
+  restarted = await restartForWindowState()
+  await until(() => restarted.evaluate('Math.abs(innerWidth - 900) <= 1 && Math.abs(innerHeight - 660) <= 1'), 'normal startup after minimized close')
+  passed('minimized close preserves normal bounds and reopens visibly')
 
   await mkdir(join(data, 'screenshots'), { recursive: true })
   await until(() => restarted.evaluate(`Boolean(document.querySelector('button[aria-label="浏览器"]'))`), 'restarted navigation')
@@ -338,6 +417,28 @@ try {
   const dark = await restarted.command('Page.captureScreenshot', { format: 'png' })
   await writeFile(join(data, 'screenshots', 'browser-dark-narrow.png'), Buffer.from(dark.data, 'base64'))
   passed('desktop and narrow dark shell layout without horizontal overflow')
+
+  await restarted.command('Emulation.clearDeviceMetricsOverride')
+  await closeForWindowState(restarted)
+  await writeFile(join(data, 'window-state.json'), JSON.stringify({
+    ...savedWindow, x: 100000, y: -100000, width: 10000, height: 10000,
+  }))
+  restarted = await restartForWindowState()
+  const available = await restarted.evaluate('({ width: screen.availWidth, height: screen.availHeight, scale: devicePixelRatio })')
+  const fitted = await closeForWindowState(restarted)
+  assert(fitted.width <= available.width && fitted.height <= available.height)
+  assert(fitted.x >= 0 && fitted.y >= 0)
+  assert(fitted.x / available.scale + fitted.width <= available.width + 1)
+  assert(fitted.y / available.scale + fitted.height <= available.height + 1)
+  passed('offscreen and oversized saved windows return to the work area')
+
+  await writeFile(join(data, 'window-state.json'), '{broken')
+  restarted = await restartForWindowState()
+  assert(await restarted.evaluate('innerWidth <= 1100 && innerHeight <= 760'))
+  await restarted.evaluate('setTimeout(() => { void window.__TAURI__.window.getCurrentWindow().close() }, 100)')
+  await until(() => app.exitCode !== null || app.signalCode !== null, 'close with invalid window preferences')
+  assert.equal(await readFile(join(data, 'window-state.json'), 'utf8'), '{broken')
+  passed('invalid window state falls back without overwriting the original file')
 } catch (error) {
   exitCode = 1
   process.stderr.write(`${error.stack}\n${nativeErrors}\n`)
