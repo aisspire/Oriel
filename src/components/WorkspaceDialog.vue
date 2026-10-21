@@ -4,7 +4,7 @@ import AppIcon from './AppIcon.vue'
 import ProxyFields from './ProxyFields.vue'
 import { errorText, hostCommand, type ProxyPolicy, type WebEntry, type WorkspaceSnapshot } from '../lib/workspace'
 
-const props = defineProps<{ mode: 'add' | 'edit' | 'settings'; entry?: WebEntry; workspace: WorkspaceSnapshot }>()
+const props = defineProps<{ mode: 'add' | 'edit' | 'settings'; entry?: WebEntry; confirmRemove?: boolean; workspace: WorkspaceSnapshot }>()
 const emit = defineEmits<{ close: []; saved: [workspace: WorkspaceSnapshot] }>()
 const dialog = ref<HTMLDialogElement>()
 const title = ref(props.entry?.title ?? '')
@@ -13,7 +13,7 @@ const proxy = ref<ProxyPolicy>({ ...(props.mode === 'settings' ? props.workspace
 const directories = ref(props.workspace.pluginDirectories.join('\n'))
 const busy = ref(false)
 const error = ref('')
-const confirmDelete = ref(false)
+const confirmDelete = ref(props.confirmRemove ?? false)
 
 async function save(remove = false) {
   if (busy.value || !props.workspace.writable) return

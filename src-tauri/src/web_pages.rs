@@ -1,5 +1,5 @@
 //! Host-owned web-page capability. Plugins supply declarations, never native handles.
-use oriel_core::{unique_id, ConfigStore, ProxyPolicy, RegisteredEntry, Snapshot};
+use oriel_core::{unique_id, BrowserSidebar, ConfigStore, ProxyPolicy, RegisteredEntry, Snapshot};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -547,6 +547,36 @@ pub async fn workspace_delete_entry(
     let mut snapshot = runtime.snapshot();
     snapshot.snapshot.diagnostics.extend(errors);
     Ok(snapshot)
+}
+
+#[tauri::command]
+pub async fn workspace_reorder_entries(
+    caller: Webview,
+    request: tauri::ipc::Request<'_>,
+    runtime: tauri::State<'_, WebPages>,
+    ids: Vec<String>,
+) -> Result<HostSnapshot> {
+    authorize(&caller, &request)?;
+    let _operation = runtime.operation.lock().await;
+    runtime.store.lock().unwrap().reorder_entries(ids)?;
+    Ok(runtime.snapshot())
+}
+
+#[tauri::command]
+pub async fn workspace_browser_sidebar(
+    caller: Webview,
+    request: tauri::ipc::Request<'_>,
+    runtime: tauri::State<'_, WebPages>,
+    sidebar: BrowserSidebar,
+) -> Result<HostSnapshot> {
+    authorize(&caller, &request)?;
+    let _operation = runtime.operation.lock().await;
+    runtime
+        .store
+        .lock()
+        .unwrap()
+        .save_browser_sidebar(sidebar)?;
+    Ok(runtime.snapshot())
 }
 
 #[tauri::command]

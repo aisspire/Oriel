@@ -7,13 +7,18 @@ import WorkspaceDialog from './components/WorkspaceDialog.vue'
 import { useAppearance } from './composables/useAppearance'
 import { getDesktopApi } from './lib/desktop'
 import { resolvePluginView } from './lib/pluginViews'
-import { errorText, hideWebSurface, hostCommand, loadWorkspace, type WorkspaceSnapshot } from './lib/workspace'
+import { errorText, hideWebSurface, hostCommand, loadWorkspace, type WebEntry, type WorkspaceSnapshot } from './lib/workspace'
 
 const { theme, iconSource, reducedMotion, paused, motionPaused, toggleTheme } = useAppearance()
 const workspace = ref<WorkspaceSnapshot>()
 const selectedId = ref('home')
+const browserSelectedId = ref('')
 const current = computed(() => workspace.value?.entries.find(e => e.id === selectedId.value))
+const primaryEntries = computed(() => workspace.value?.entries.filter(entry => !entry.editable) ?? [])
 const modal = ref<'add' | 'edit' | 'settings' | null>(null)
+const dialogEntry = ref<WebEntry>()
+const confirmRemove = ref(false)
+const openingDialog = ref(false)
 const error = ref('')
 const reloading = ref(false)
 const desktop = Boolean(getDesktopApi())
@@ -27,19 +32,30 @@ async function reload(initial = false) {
   } catch (cause) { error.value = errorText(cause) }
   finally { reloading.value = false }
 }
-async function openDialog(mode: 'add' | 'edit' | 'settings') {
-  if (modal.value || !desktop) return
-  try { await hideWebSurface(); modal.value = mode }
+async function openDialog(mode: 'add' | 'edit' | 'settings', entry?: WebEntry, remove = false) {
+  if (modal.value || openingDialog.value || !desktop) return
+  openingDialog.value = true
+  try {
+    await hideWebSurface()
+    dialogEntry.value = entry
+    confirmRemove.value = remove
+    modal.value = mode
+  }
   catch (cause) { error.value = errorText(cause) }
+  finally { openingDialog.value = false }
 }
 function saved(snapshot: WorkspaceSnapshot) {
   if (modal.value === 'add') {
     const added = snapshot.entries.find(entry => entry.editable && !workspace.value?.entries.some(old => old.id === entry.id))
-    if (added) selectedId.value = added.id
+    if (added) {
+      browserSelectedId.value = added.id
+      selectedId.value = snapshot.entries.find(entry => entry.kind === 'browser')?.id ?? 'home'
+    }
   }
   workspace.value = snapshot
   if (selectedId.value !== 'home' && !current.value) selectedId.value = 'home'
 }
+function editEntry(entry: WebEntry, remove = false) { void openDialog('edit', entry, remove) }
 onMounted(() => { void reload(true) })
 </script>
 
@@ -54,14 +70,13 @@ onMounted(() => { void reload(true) })
       <nav class="primary-nav" aria-label="主导航">
         <button class="nav-link" :class="{ 'is-active': !current }" type="button" :aria-current="!current ? 'page' : undefined" aria-label="首页" title="首页" @click="selectedId = 'home'"><AppIcon name="home" /></button>
         <button
-          v-for="entry in workspace?.entries" :key="entry.id" class="nav-link" :class="{ 'is-active': selectedId === entry.id }"
+          v-for="entry in primaryEntries" :key="entry.id" class="nav-link" :class="{ 'is-active': selectedId === entry.id }"
           type="button" :aria-current="selectedId === entry.id ? 'page' : undefined" :aria-label="entry.title" :title="entry.title"
           @click="selectedId = entry.id"
         >
           <AppIcon v-if="entry.kind === 'browser'" name="globe" />
           <span v-else class="site-monogram" aria-hidden="true">{{ Array.from(entry.title)[0] }}</span>
         </button>
-        <button v-if="workspace" class="nav-link add-webpage" type="button" aria-label="添加网页" title="添加网页" :disabled="!desktop || !workspace.writable" @click="openDialog('add')"><AppIcon name="plus" /></button>
       </nav>
       <div class="sidebar-bottom">
         <button v-if="workspace && desktop" class="icon-button" type="button" aria-label="重新加载接入" title="重新加载接入" :disabled="reloading" @click="reload()"><AppIcon name="refresh" /></button>
@@ -79,11 +94,12 @@ onMounted(() => { void reload(true) })
         <button class="text-button" type="button" :disabled="reloading" @click="reload()">重新加载</button>
       </div>
       <component
-        :is="resolvePluginView(current.kind)" v-if="current && workspace" :entry="current" :supported="workspace.browserSupported"
-        :writable="workspace.writable" :suspended="modal !== null" @edit="openDialog('edit')" @settings="openDialog('settings')" @add="openDialog('add')"
+        :is="resolvePluginView(current.kind)" v-if="current && workspace" :entry="current" :workspace="workspace" :selected-id="browserSelectedId" :supported="workspace.browserSupported"
+        :writable="workspace.writable" :suspended="modal !== null || openingDialog" @edit="editEntry" @settings="openDialog('settings')" @add="openDialog('add')"
+        @select="browserSelectedId = $event" @updated="saved"
       />
       <OrielShowcase v-else :paused="motionPaused" />
     </main>
   </div>
-  <WorkspaceDialog v-if="modal && workspace" :mode="modal" :entry="modal === 'edit' ? current : undefined" :workspace="workspace" @close="modal = null" @saved="saved" />
+  <WorkspaceDialog v-if="modal && workspace" :mode="modal" :entry="dialogEntry" :confirm-remove="confirmRemove" :workspace="workspace" @close="modal = null" @saved="saved" />
 </template>

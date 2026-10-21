@@ -19,6 +19,17 @@ export interface WorkspaceSnapshot {
   writable: boolean
   browserSupported: boolean
   configPath: string
+  browserSidebar: BrowserSidebar
+}
+export interface BrowserSidebar { collapsed: boolean; width: number }
+export const defaultBrowserSidebar: BrowserSidebar = { collapsed: false, width: 240 }
+export interface PluginViewProps {
+  entry: WebEntry
+  workspace: WorkspaceSnapshot
+  selectedId: string
+  supported: boolean
+  writable: boolean
+  suspended: boolean
 }
 export interface WebSessionState {
   entryId: string
@@ -45,6 +56,7 @@ export function loadWorkspace(): Promise<WorkspaceSnapshot> {
     })),
     defaultProxy: { mode: 'system' }, pluginDirectories: [], diagnostics: [],
     writable: false, browserSupported: false, configPath: '',
+    browserSidebar: { ...defaultBrowserSidebar },
   })
 }
 export function emptySession(entry: WebEntry): WebSessionState {

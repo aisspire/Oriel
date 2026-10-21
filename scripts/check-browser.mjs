@@ -13,6 +13,10 @@ if (process.platform !== 'win32') throw new Error('Run with Windows Node after b
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const data = join(root, 'target', 'browser-check', `${Date.now()}`)
 await mkdir(data, { recursive: true })
+await mkdir(join(data, 'screenshots'), { recursive: true })
+// Exercise the legacy format without touching any real workspace configuration.
+const legacyConfig = JSON.stringify({ version: 1, webEntries: [], pluginDirectories: [], defaultProxy: { mode: 'system' } })
+await writeFile(join(data, 'workspace.json'), legacyConfig)
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms))
 async function until(check, description, timeout = 25000) {
   const deadline = Date.now() + timeout
@@ -180,6 +184,11 @@ try {
   assert(initialWindow.height <= initialWindow.availableHeight)
   passed('smaller first window fits the screen work area')
 
+  await click('浏览器')
+  await until(() => shell.evaluate(`Boolean(document.querySelector('.fixed-browser-empty'))`), 'empty fixed-page workspace')
+  assert.equal(await readFile(join(data, 'workspace.json'), 'utf8'), legacyConfig)
+  assert.equal(await shell.evaluate(`document.querySelectorAll('.web-surface').length`), 0)
+  passed('browser starts with a fixed-page empty state and preserves the legacy file until saving')
   await click('添加网页')
   await until(() => shell.evaluate(`Boolean(document.querySelector('dialog[open] input'))`), 'add webpage dialog')
   await shell.evaluate(`(() => { const inputs = document.querySelectorAll('dialog[open] input'); inputs[0].value='Native fixture'; inputs[0].dispatchEvent(new Event('input',{bubbles:true})); inputs[1].value=${JSON.stringify(`${fixtureUrl}/start`)}; inputs[1].dispatchEvent(new Event('input',{bubbles:true})); document.querySelector('dialog[open] form').requestSubmit(); })()`)
@@ -190,7 +199,38 @@ try {
   const page = await connectProfile(join(data, 'web-profiles', entry.id), target => target.url.startsWith(fixtureUrl))
   connections.push(page)
   await until(() => page.evaluate('document.title === "Fixture /start"'), 'initial webpage load')
+  assert.equal(JSON.parse(await readFile(join(data, 'workspace.json'), 'utf8')).version, 2)
+  assert.equal(await shell.evaluate(`document.querySelectorAll('.primary-nav .site-monogram').length`), 0)
+  assert.equal(await shell.evaluate(`document.querySelectorAll('.fixed-page').length`), 1)
   passed('webpage creation through UI and native rendering')
+
+  const instanceToken = await page.evaluate('window.layoutInstanceToken = Math.random().toString(36)')
+  await click('收窄网页侧栏')
+  await until(async () => (await invoke('workspace_snapshot')).browserSidebar.collapsed, 'collapsed preference persisted')
+  assert.equal(await shell.evaluate(`document.querySelector('.browser-sidebar').getBoundingClientRect().width`), 52)
+  await click('展开网页侧栏')
+  await until(async () => !(await invoke('workspace_snapshot')).browserSidebar.collapsed, 'expanded preference persisted')
+  await shell.evaluate(`document.querySelector('[role="separator"]').focus()`)
+  await shell.command('Input.dispatchKeyEvent', { type: 'keyDown', key: 'ArrowRight', code: 'ArrowRight', windowsVirtualKeyCode: 39 })
+  await shell.command('Input.dispatchKeyEvent', { type: 'keyUp', key: 'ArrowRight', code: 'ArrowRight', windowsVirtualKeyCode: 39 })
+  await until(async () => (await invoke('workspace_snapshot')).browserSidebar.width === 250, 'keyboard sidebar resize persisted')
+  assert.equal(await page.evaluate('window.layoutInstanceToken'), instanceToken)
+  await click('首页')
+  assert.equal(await shell.evaluate(`document.querySelector('.browser-workspace')`), null)
+  await click('浏览器')
+  await until(() => shell.evaluate(`document.querySelector('.browser-sidebar')?.getBoundingClientRect().width === 250`), 'sidebar width restored after plugin switch')
+  assert.equal(await page.evaluate('window.layoutInstanceToken'), instanceToken)
+  passed('collapse, keyboard resize and plugin switching preserve the native webpage instance')
+
+  const resizeGrip = await shell.evaluate(`(() => { const bounds = document.querySelector('[role="separator"]').getBoundingClientRect(); return { x: bounds.x + bounds.width / 2, y: bounds.y + 80 } })()`)
+  await shell.command('Input.dispatchMouseEvent', { type: 'mouseMoved', ...resizeGrip })
+  await shell.command('Input.dispatchMouseEvent', { type: 'mousePressed', button: 'left', buttons: 1, clickCount: 1, ...resizeGrip })
+  await until(() => page.evaluate('document.visibilityState === "hidden"'), 'native webpage hidden before resizing across its bounds')
+  await shell.command('Input.dispatchMouseEvent', { type: 'mouseMoved', buttons: 1, x: resizeGrip.x + 50, y: resizeGrip.y })
+  await shell.command('Input.dispatchMouseEvent', { type: 'mouseReleased', button: 'left', buttons: 0, clickCount: 1, x: resizeGrip.x + 50, y: resizeGrip.y })
+  await until(async () => (await invoke('workspace_snapshot')).browserSidebar.width === 300, 'pointer sidebar resize persisted')
+  assert.equal(await page.evaluate('window.layoutInstanceToken'), instanceToken)
+  passed('pointer resizing across the native webpage preserves the page instance')
 
   await page.evaluate(`document.querySelector('#next').click()`)
   await until(() => shell.evaluate(`document.querySelector('input[aria-label="网页地址"]').value.endsWith('/next') && !document.querySelector('button[aria-label="上一页"]').disabled`), 'history state')
@@ -275,6 +315,73 @@ try {
   assert.equal(await secondPage.evaluate('document.cookie'), '')
   passed('independent entry browser profiles')
 
+  await click(entry.title)
+  await until(() => shell.evaluate(`document.querySelector('input[aria-label="网页地址"]').value.includes('/start')`), 'first page restored before background menu')
+  await click('Separate profile的菜单')
+  await until(() => shell.evaluate(`Boolean(document.querySelector('.page-actions[open]'))`), 'background page action menu')
+  await until(() => page.evaluate('document.visibilityState === "hidden"'), 'native page hidden for host menu')
+  assert.equal(await shell.evaluate(`document.querySelector('.fixed-page.is-active .fixed-page-button').getAttribute('aria-label')`), entry.title)
+  await shell.evaluate(`Array.from(document.querySelectorAll('.page-actions button')).find(button => button.textContent === '上移').click()`)
+  await until(async () => (await invoke('workspace_snapshot')).entries.filter(entry => entry.editable)[0].id === secondEntry.id, 'fixed page order persisted')
+  assert.equal(await shell.evaluate(`document.querySelector('.fixed-page.is-active .fixed-page-button').getAttribute('aria-label')`), entry.title)
+  assert((await page.evaluate('document.cookie')).includes('entry_cookie=first'))
+  passed('background page menu targets its own entry and reorders without switching or losing login data')
+
+  const dragPoints = await shell.evaluate(`Array.from(document.querySelectorAll('.fixed-page-button')).map(button => { const bounds = button.getBoundingClientRect(); return { x: bounds.x + 24, y: bounds.y + bounds.height / 2 } })`)
+  const dragSource = dragPoints[1]
+  const dragDestination = { x: dragPoints[0].x, y: dragPoints[0].y - 10 }
+  await shell.command('Input.dispatchMouseEvent', { type: 'mouseMoved', ...dragSource })
+  await shell.command('Input.dispatchMouseEvent', { type: 'mousePressed', button: 'left', buttons: 1, clickCount: 1, ...dragSource })
+  for (let step = 1; step <= 12; step++) {
+    await shell.command('Input.dispatchMouseEvent', { type: 'mouseMoved', buttons: 1, x: dragSource.x, y: dragSource.y + (dragDestination.y - dragSource.y) * step / 12 })
+  }
+  await shell.command('Input.dispatchMouseEvent', { type: 'mouseReleased', button: 'left', buttons: 0, clickCount: 1, ...dragDestination })
+  await until(async () => (await invoke('workspace_snapshot')).entries.filter(entry => entry.editable)[0].id === entry.id, 'pointer drag order persisted')
+  assert.equal(await shell.evaluate(`document.querySelector('.fixed-page.is-active .fixed-page-button').getAttribute('aria-label')`), entry.title)
+  assert((await page.evaluate('document.cookie')).includes('entry_cookie=first'))
+  passed('dragging fixed pages persists their order without changing the selected page')
+
+  await shell.evaluate(`document.querySelector('button[aria-label="Separate profile"]').focus()`)
+  await shell.command('Input.dispatchKeyEvent', { type: 'keyDown', key: 'ContextMenu', code: 'ContextMenu', windowsVirtualKeyCode: 93 })
+  await shell.command('Input.dispatchKeyEvent', { type: 'keyUp', key: 'ContextMenu', code: 'ContextMenu', windowsVirtualKeyCode: 93 })
+  await until(() => shell.evaluate(`Boolean(document.querySelector('.page-actions[open]'))`), 'keyboard page action menu')
+  await shell.command('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+  await shell.command('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+  await until(() => shell.evaluate(`!document.querySelector('.page-actions[open]') && document.activeElement?.getAttribute('aria-label') === 'Separate profile'`), 'keyboard menu dismissal restores focus')
+  passed('keyboard page menus restore focus without switching the active webpage')
+
+  const extraIds = []
+  for (let index = 0; index < 36; index++) {
+    const title = `固定网页 ${index + 1} · 用于检查较长名称与列表滚动`
+    const added = await invoke('workspace_save_entry', { id: null, title, url: `${fixtureUrl}/unused-${index}`, proxy: { mode: 'direct' } })
+    extraIds.push(added.entries.find(item => item.title === title).id)
+  }
+  await click('重新加载接入')
+  await until(() => shell.evaluate(`document.querySelectorAll('.fixed-page').length === 38`), 'long fixed-page list')
+  assert(await shell.evaluate(`(() => { const list = document.querySelector('.fixed-pages'); const add = document.querySelector('.add-fixed-page').getBoundingClientRect(); return list.scrollHeight > list.clientHeight && add.bottom <= innerHeight && add.top >= 0 })()`))
+  const profiles = await readdir(join(data, 'web-profiles'))
+  assert(extraIds.every(id => !profiles.includes(id)))
+  const expandedShot = await shell.command('Page.captureScreenshot', { format: 'png' })
+  await writeFile(join(data, 'screenshots', 'fixed-pages-expanded.png'), Buffer.from(expandedShot.data, 'base64'))
+  passed('long fixed-page lists scroll independently and do not eagerly create native profiles')
+
+  for (const width of [1100, 900, 800, 680, 480, 390]) {
+    await shell.command('Emulation.setDeviceMetricsOverride', { width, height: 760, deviceScaleFactor: 1, mobile: false })
+    await until(() => shell.evaluate(`(() => { const root = document.querySelector('.browser-workspace'); return document.documentElement.scrollWidth <= innerWidth && root.classList.contains('is-compact') === (root.getBoundingClientRect().width < 720) })()`), `fixed-page layout at ${width}px`)
+    assert(await shell.evaluate(`(() => { const list = document.querySelector('.fixed-pages'); return list.scrollWidth <= list.clientWidth })()`), `fixed-page list overflow at ${width}px`)
+    if (width === 480) {
+      const narrowShot = await shell.command('Page.captureScreenshot', { format: 'png' })
+      await writeFile(join(data, 'screenshots', 'fixed-pages-compact-480.png'), Buffer.from(narrowShot.data, 'base64'))
+    }
+  }
+  await shell.command('Emulation.clearDeviceMetricsOverride')
+  await until(() => shell.evaluate(`!document.querySelector('.browser-workspace').classList.contains('is-compact')`), 'expanded layout restored after narrow windows')
+  assert.deepEqual((await invoke('workspace_snapshot')).browserSidebar, { collapsed: false, width: 300 })
+  for (const id of extraIds) await invoke('workspace_delete_entry', { id })
+  await click('重新加载接入')
+  await until(() => shell.evaluate(`document.querySelectorAll('.fixed-page').length === 2`), 'temporary layout fixtures removed')
+  passed('six viewport sizes preserve sidebar preferences without horizontal overflow')
+
   const external = join(data, 'external-plugin')
   await mkdir(external)
   await writeFile(join(external, 'plugin.json'), JSON.stringify({ schemaVersion: 1, id: 'check.external', name: 'External', version: '1', capabilities: ['web-page'], entries: [{ id: 'page', title: 'External webpage', kind: 'web-page', url: `${fixtureUrl}/external` }] }))
@@ -282,8 +389,9 @@ try {
   assert(updated.entries.some(item => item.id === 'check.external.page'))
   await click('重新加载接入')
   await until(() => shell.evaluate(`Boolean(document.querySelector('button[aria-label="External webpage"]'))`), 'external manifest navigation')
-  await click('浏览器')
-  await invoke('web_navigate', { entryId: 'oriel.browser.browser', url: 'http://oriel-proxy.test/probe' })
+  await click('External webpage')
+  assert.equal(await shell.evaluate(`document.querySelector('.browser-sidebar')`), null)
+  await invoke('web_navigate', { entryId: 'check.external.page', url: 'http://oriel-proxy.test/probe' })
   await until(() => proxyRequests.some(url => url.includes('oriel-proxy.test/probe')), 'default HTTP proxy request')
   passed('external webpage registration without recompilation and default HTTP proxy')
 
@@ -293,6 +401,7 @@ try {
   passed('per-entry SOCKS5 proxy')
 
   const beforeDirect = visits
+  await click('浏览器')
   await click('Separate profile')
   await until(() => shell.evaluate(`document.querySelector('input[aria-label="网页地址"]').value.endsWith('/second')`), 'explicit direct entry')
   await invoke('web_navigate', { entryId: secondEntry.id, url: `${fixtureUrl}/direct-check` })
@@ -321,6 +430,7 @@ try {
   assert(!fixtureRequests.includes('/no-fallback-check'))
   await invoke('workspace_delete_entry', { id: probe.id })
   await click('首页')
+  await click('浏览器')
   await click(entry.title)
   passed('unavailable proxy reports an error without falling back to a direct connection')
 
@@ -328,14 +438,16 @@ try {
   assert.equal(persisted.webEntries.length, 3)
   assert.equal(persisted.pluginDirectories[0], external)
   secondPage.close()
-  await click('Separate profile')
-  await click('网页设置')
-  await until(() => shell.evaluate(`Boolean(document.querySelector('dialog[open] .delete-entry'))`), 'delete entry dialog')
-  await shell.evaluate(`document.querySelector('dialog[open] .delete-entry').click();`)
+  await click(entry.title)
+  await click('Separate profile的菜单')
+  await until(() => shell.evaluate(`Boolean(document.querySelector('.page-actions[open]'))`), 'background removal menu')
+  await shell.evaluate(`Array.from(document.querySelectorAll('.page-actions button')).find(button => button.textContent === '移除网页').click()`)
   await until(() => shell.evaluate(`Boolean(document.querySelector('.delete-confirmation .danger'))`), 'delete confirmation')
+  assert.equal(await shell.evaluate(`document.querySelector('dialog[open] input').value`), 'Separate profile')
   await shell.evaluate(`document.querySelector('.delete-confirmation .danger').click()`)
   await until(() => shell.evaluate(`!document.querySelector('button[aria-label="Separate profile"]') && !document.querySelector('dialog[open]')`), 'deleted entry')
   assert(!(await invoke('workspace_snapshot')).entries.some(item => item.id === secondEntry.id))
+  assert.equal(await shell.evaluate(`document.querySelector('.fixed-page.is-active .fixed-page-button').getAttribute('aria-label')`), entry.title)
   await readFile(join(data, 'web-profiles', secondEntry.id, 'EBWebView', 'Local State'))
   passed('webpage removal through UI preserves browser data')
 
@@ -379,6 +491,8 @@ if (![OrielWindowCheck]::SetWindowPos($handle, [IntPtr]::Zero, 120, 100, $width,
   assert(restored.entries.some(item => item.id === entry.id && item.title === entry.title))
   assert(!restored.entries.some(item => item.id === secondEntry.id))
   assert.equal(restored.defaultProxy.mode, 'custom')
+  assert.equal(restored.browserSidebar.width, 300)
+  assert.equal(restored.browserSidebar.collapsed, false)
   passed('application restart restores local entries and proxy configuration')
 
   await restarted.evaluate('window.__TAURI__.window.getCurrentWindow().toggleMaximize()')

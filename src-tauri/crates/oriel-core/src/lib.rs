@@ -3,7 +3,7 @@ pub mod window_state;
 
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fs,
     io::Write,
     path::{Path, PathBuf},
@@ -113,6 +113,24 @@ pub struct Workspace {
     pub web_entries: Vec<WebEntry>,
     #[serde(default = "system_proxy")]
     pub default_proxy: ProxyPolicy,
+    #[serde(default)]
+    pub browser_sidebar: BrowserSidebar,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BrowserSidebar {
+    pub collapsed: bool,
+    pub width: u16,
+}
+
+impl Default for BrowserSidebar {
+    fn default() -> Self {
+        Self {
+            collapsed: false,
+            width: 240,
+        }
+    }
 }
 
 fn system_proxy() -> ProxyPolicy {
@@ -122,10 +140,11 @@ fn system_proxy() -> ProxyPolicy {
 impl Default for Workspace {
     fn default() -> Self {
         Self {
-            version: 1,
+            version: 2,
             plugin_directories: vec![],
             web_entries: vec![],
             default_proxy: system_proxy(),
+            browser_sidebar: BrowserSidebar::default(),
         }
     }
 }
@@ -147,6 +166,7 @@ pub struct Snapshot {
     pub plugin_directories: Vec<PathBuf>,
     pub diagnostics: Vec<String>,
     pub writable: bool,
+    pub browser_sidebar: BrowserSidebar,
 }
 
 pub fn valid_id(id: &str) -> bool {
@@ -230,14 +250,17 @@ fn validate_entry(entry: &mut WebEntry) -> Result<()> {
     if entry.kind == EntryKind::WebPage {
         entry.url = Some(normalize_url(entry.url.as_deref().unwrap_or(""))?);
     } else if entry.url.is_some() {
-        return Err("临时浏览器入口不能声明固定网址。".into());
+        return Err("浏览器插件入口不能声明固定网址。".into());
     }
     Ok(())
 }
 
 fn validate_workspace(workspace: &mut Workspace) -> Result<()> {
-    if workspace.version != 1 {
+    if workspace.version != 2 {
         return Err("不支持此配置版本，原文件已保留。".into());
+    }
+    if !(200..=360).contains(&workspace.browser_sidebar.width) {
+        return Err("浏览器侧栏宽度须为 200–360。".into());
     }
     workspace.default_proxy.validate(true)?;
     let mut ids = HashSet::new();
@@ -296,6 +319,10 @@ impl ConfigStore {
                         .map_err(|_| "本地配置格式无效，原文件已保留。".into())
                 })
                 .and_then(|mut value| {
+                    // Upgrade in memory only. A failed read or write must preserve the old file.
+                    if value.version == 1 {
+                        value.version = 2;
+                    }
                     validate_workspace(&mut value)?;
                     Ok(value)
                 })
@@ -355,6 +382,7 @@ impl ConfigStore {
             plugin_directories: self.workspace.plugin_directories.clone(),
             diagnostics: self.load_error.iter().cloned().collect(),
             writable: self.load_error.is_none(),
+            browser_sidebar: self.workspace.browser_sidebar.clone(),
         };
         let mut plugin_ids = HashSet::new();
         let mut entry_ids = HashSet::new();
@@ -460,6 +488,33 @@ impl ConfigStore {
         if next.web_entries.len() == before {
             return Err("自定义网页不存在。".into());
         }
+        self.commit(next)
+    }
+
+    pub fn reorder_entries(&mut self, ids: Vec<String>) -> Result<()> {
+        let requested: HashSet<_> = ids.iter().collect();
+        let existing: HashSet<_> = self
+            .workspace
+            .web_entries
+            .iter()
+            .map(|entry| &entry.id)
+            .collect();
+        if ids.len() != existing.len() || requested != existing {
+            return Err("网页列表已变化，请重新加载后再排序。".into());
+        }
+        let mut next = self.workspace.clone();
+        let mut entries: HashMap<_, _> = next
+            .web_entries
+            .drain(..)
+            .map(|entry| (entry.id.clone(), entry))
+            .collect();
+        next.web_entries = ids.iter().map(|id| entries.remove(id).unwrap()).collect();
+        self.commit(next)
+    }
+
+    pub fn save_browser_sidebar(&mut self, sidebar: BrowserSidebar) -> Result<()> {
+        let mut next = self.workspace.clone();
+        next.browser_sidebar = sidebar;
         self.commit(next)
     }
 }
@@ -674,6 +729,85 @@ mod tests {
         let snapshot = store.snapshot(&invalid);
         assert!(snapshot.entries.is_empty());
         assert_eq!(snapshot.diagnostics.len(), 1);
+    }
+    #[test]
+    fn legacy_workspace_migrates_without_changing_webpage_identity() {
+        let dir = TestDir::new();
+        let legacy = r#"{"version":1,"webEntries":[{"id":"user.existing","title":"工作邮箱","kind":"web-page","url":"https://example.com/","proxy":{"mode":"direct"}}],"defaultProxy":{"mode":"system"}}"#;
+        fs::write(dir.config(), legacy).unwrap();
+        let mut store = ConfigStore::open(dir.config());
+        assert!(store.snapshot(BUILTIN).writable);
+        assert_eq!(store.workspace.version, 2);
+        assert_eq!(store.workspace.browser_sidebar, BrowserSidebar::default());
+        assert_eq!(fs::read_to_string(dir.config()).unwrap(), legacy);
+        store
+            .save_browser_sidebar(BrowserSidebar {
+                collapsed: true,
+                width: 280,
+            })
+            .unwrap();
+        let restored = ConfigStore::open(dir.config());
+        assert_eq!(restored.workspace.web_entries[0].id, "user.existing");
+        assert_eq!(restored.workspace.web_entries[0].proxy, ProxyPolicy::Direct);
+        assert!(restored.workspace.browser_sidebar.collapsed);
+        assert_eq!(restored.workspace.browser_sidebar.width, 280);
+        assert_eq!(restored.workspace.version, 2);
+    }
+    #[test]
+    fn reorder_preserves_entries_and_rejects_stale_or_duplicate_ids() {
+        let dir = TestDir::new();
+        let mut store = ConfigStore::open(dir.config());
+        let first = store
+            .save_entry(None, "一".into(), "example.com".into(), ProxyPolicy::Direct)
+            .unwrap();
+        let second = store
+            .save_entry(
+                None,
+                "二".into(),
+                "example.org".into(),
+                ProxyPolicy::Inherit,
+            )
+            .unwrap();
+        store
+            .reorder_entries(vec![second.clone(), first.clone()])
+            .unwrap();
+        let restored = ConfigStore::open(dir.config());
+        assert_eq!(restored.workspace.web_entries[0].id, second);
+        assert_eq!(restored.workspace.web_entries[1].id, first);
+        assert_eq!(restored.workspace.web_entries[1].proxy, ProxyPolicy::Direct);
+        let before = fs::read(dir.config()).unwrap();
+        for ids in [
+            vec![first.clone()],
+            vec![first.clone(), first.clone()],
+            vec![first, "user.unknown".into()],
+        ] {
+            assert!(store.reorder_entries(ids).is_err());
+            assert_eq!(fs::read(dir.config()).unwrap(), before);
+        }
+    }
+    #[test]
+    fn invalid_browser_sidebar_cannot_overwrite_config() {
+        let dir = TestDir::new();
+        let mut store = ConfigStore::open(dir.config());
+        store.commit(Workspace::default()).unwrap();
+        let before = fs::read(dir.config()).unwrap();
+        for width in [0, 199, 361, u16::MAX] {
+            assert!(store
+                .save_browser_sidebar(BrowserSidebar {
+                    collapsed: false,
+                    width
+                })
+                .is_err());
+            assert_eq!(fs::read(dir.config()).unwrap(), before);
+        }
+        let invalid = String::from_utf8(before).unwrap().replace("240", "999");
+        fs::write(dir.config(), &invalid).unwrap();
+        let mut invalid_store = ConfigStore::open(dir.config());
+        assert!(!invalid_store.snapshot(BUILTIN).writable);
+        assert!(invalid_store
+            .save_browser_sidebar(BrowserSidebar::default())
+            .is_err());
+        assert_eq!(fs::read_to_string(dir.config()).unwrap(), invalid);
     }
     #[test]
     fn invalid_edits_do_not_modify_persisted_config() {

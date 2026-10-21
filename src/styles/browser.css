@@ -14,7 +14,7 @@
 .plain-icon svg { width: 17px; height: 17px; }
 .plain-icon:hover:not(:disabled) { background: var(--surface); color: var(--text-primary); }
 .plain-icon:active:not(:disabled) { background: var(--line); }
-.address-bar-form { display: flex; flex: 1; min-width: 140px; max-width: 720px; margin: 0 8px; }
+.address-bar-form { display: flex; flex: 1 1 720px; min-width: 140px; max-width: 720px; margin: 0 8px; }
 .address-field { display: flex; flex: 1; align-items: center; gap: 8px; min-width: 0; height: 32px; padding: 0 4px 0 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); transition: border-color 150ms, box-shadow 150ms; }
 .address-field:focus-within { border-color: var(--focus); box-shadow: 0 0 0 2px var(--focus); }
 .address-field > svg { width: 16px; height: 16px; color: var(--text-secondary); }

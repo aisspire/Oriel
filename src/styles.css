@@ -1,5 +1,6 @@
 @import url('./styles/showcase.css');
 @import url('./styles/browser.css');
+@import url('./styles/browser-workspace.css');
 
 :root {
   font-family: "Segoe UI Variable", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;

@@ -3,10 +3,10 @@ import { computed, nextTick, onUnmounted, ref, watch, useTemplateRef } from 'vue
 import AppIcon from '../../../src/components/AppIcon.vue'
 import WindowControls from '../../../src/components/WindowControls.vue'
 import { useWebSession } from '../../../src/composables/useWebSession'
-import { type WebEntry } from '../../../src/lib/workspace'
+import { hideWebSurface, type PluginViewProps, type WebEntry } from '../../../src/lib/workspace'
 
-const props = defineProps<{ entry: WebEntry; supported: boolean; writable: boolean; suspended: boolean }>()
-const emit = defineEmits<{ edit: []; settings: []; add: [] }>()
+const props = defineProps<PluginViewProps>()
+const emit = defineEmits<{ edit: [entry: WebEntry]; settings: []; add: [] }>()
 const passwords = ref<HTMLDialogElement>()
 const passwordDialog = ref(false)
 const clearing = ref(false)
@@ -29,7 +29,8 @@ function browse(action: 'back' | 'forward' | 'reload' | 'stop') {
 }
 async function openPasswords() {
   passwordDialog.value = true; cleared.value = false; error.value = ''
-  await nextTick(); passwords.value?.showModal()
+  try { await hideWebSurface(); await nextTick(); passwords.value?.showModal() }
+  catch (cause) { passwordDialog.value = false; error.value = String(cause) }
 }
 function closePasswords() { passwords.value?.close(); passwordDialog.value = false; clearing.value = false; cleared.value = false }
 async function clearPasswords() {
@@ -58,7 +59,7 @@ onUnmounted(() => passwords.value?.close())
       <div class="toolbar-drag-spacer" data-tauri-drag-region></div>
       <div class="browser-options">
         <button class="plain-icon" type="button" aria-label="账号密码" title="账号密码" :disabled="!available" @click="openPasswords"><AppIcon name="key" /></button>
-        <button v-if="entry.editable" class="plain-icon" type="button" aria-label="网页设置" title="网页设置" :disabled="!writable || busy" @click="emit('edit')"><AppIcon name="settings" /></button>
+        <button v-if="entry.editable" class="plain-icon" type="button" aria-label="网页设置" title="网页设置" :disabled="!writable || busy" @click="emit('edit', entry)"><AppIcon name="settings" /></button>
         <button v-else class="plain-icon" type="button" aria-label="浏览设置" title="浏览设置" :disabled="!writable || busy" @click="emit('settings')"><AppIcon name="settings" /></button>
       </div>
       <WindowControls class="browser-window-controls" />
@@ -71,7 +72,7 @@ onUnmounted(() => passwords.value?.close())
       <div v-if="!supported" class="browser-empty"><AppIcon name="globe" /><p>请在 Windows 桌面应用中浏览网页。</p></div>
       <div v-else-if="!state.url" class="browser-empty">
         <AppIcon name="globe" /><p>输入网址，打开网页。</p>
-        <button class="text-button" type="button" :disabled="!writable" @click="emit('add')">添加到侧栏</button>
+        <button class="text-button" type="button" :disabled="!writable" @click="emit('add')">添加网页</button>
       </div>
     </div>
     <dialog ref="passwords" class="settings-dialog password-dialog" aria-labelledby="password-dialog-title" @cancel="clearing ? $event.preventDefault() : closePasswords()">
