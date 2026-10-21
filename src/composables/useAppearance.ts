@@ -1,4 +1,5 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { syncDesktopIcon } from '../lib/desktop'
 
 type Theme = 'light' | 'dark'
 const themeKey = 'oriel.appearance.theme'
@@ -13,6 +14,7 @@ function readTheme(): Theme {
 
 export function useAppearance() {
   const theme = ref<Theme>(readTheme())
+  const iconSource = computed(() => theme.value === 'dark' ? '/oriel-icon.svg' : '/oriel-icon-light.svg')
   const motionPreference = window.matchMedia('(prefers-reduced-motion: reduce)')
   const reducedMotion = ref(motionPreference.matches)
   const paused = ref(false)
@@ -34,7 +36,11 @@ export function useAppearance() {
   watch(theme, (value) => {
     document.documentElement.dataset.theme = value
     document.querySelector('meta[name="theme-color"]')
-      ?.setAttribute('content', value === 'light' ? '#eeedf1' : '#16171e')
+      ?.setAttribute('content', value === 'light' ? '#f3f3f6' : '#1c1d26')
+    document.querySelector('#app-icon')?.setAttribute('href', iconSource.value)
+    void syncDesktopIcon(iconSource.value).catch((error) => {
+      console.error('Could not update the Oriel window icon.', error)
+    })
     try {
       localStorage.setItem(themeKey, value)
     } catch {
@@ -52,5 +58,5 @@ export function useAppearance() {
     document.removeEventListener('visibilitychange', syncVisibility)
   })
 
-  return { theme, reducedMotion, paused, motionPaused, toggleTheme }
+  return { theme, iconSource, reducedMotion, paused, motionPaused, toggleTheme }
 }

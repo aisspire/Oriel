@@ -1,6 +1,6 @@
 <script setup lang="ts">
 defineProps<{
-  name: 'home' | 'sun' | 'moon' | 'pause' | 'play' | 'window' | 'spark'
+  name: 'home' | 'sun' | 'moon' | 'pause' | 'play' | 'minimize' | 'maximize' | 'restore' | 'close'
 }>()
 </script>
 
@@ -34,10 +34,12 @@ defineProps<{
       <path d="M9 6v12m6-12v12" stroke-width="2.5" />
     </template>
     <path v-else-if="name === 'play'" d="m9 5 10 7-10 7V5Z" />
-    <template v-else-if="name === 'window'">
-      <rect x="4" y="3" width="16" height="18" rx="5" />
-      <path d="M12 3v18M4 12h16" />
+    <path v-else-if="name === 'minimize'" d="M5 12h14" />
+    <rect v-else-if="name === 'maximize'" x="5" y="5" width="14" height="14" rx=".5" />
+    <template v-else-if="name === 'restore'">
+      <path d="M9 7V4h11v11h-3" />
+      <rect x="4" y="9" width="11" height="11" rx=".5" />
     </template>
-    <path v-else-if="name === 'spark'" d="M12 3c0 5-4 9-9 9 5 0 9 4 9 9 0-5 4-9 9-9-5 0-9-4-9-9Z" />
+    <path v-else-if="name === 'close'" d="m6 6 12 12M18 6 6 18" />
   </svg>
 </template>

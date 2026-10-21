@@ -7,7 +7,7 @@
 1. [当前设计基线](design/current-design.md)：本阶段统一阅读入口，汇总产品目标、已确认要求、候选架构和待定问题。
 2. [产品愿景](vision.md)：定位、原则、数据方向与阶段范围。
 3. [设计决策记录](design/workspace-and-plugins.md)：已确认方向、变更原因与延后事项。
-4. [初版首页与视觉设计](design/home-and-identity.md)：初版范围、应用图标、色彩、布局与动效说明。
+4. [首页与界面设计](design/home-and-identity.md)：UI 简洁原则、深浅两套主题与当前首页方案。
 
 设计基线说明当前方案与状态，决策记录保存必要的理由和演进。后续讨论应同步维护两者，避免正式资料依赖原始聊天或本地归档。
 
@@ -17,7 +17,7 @@
 - [设计维护 skill](../.agents/skills/oriel-design-maintenance/SKILL.md)：同步设计基线、愿景和决策记录。
 - [插件开发 skill](../.agents/skills/oriel-plugin-development/SKILL.md)：插件接入、独立工具适配、交付命令与生命周期指导；尚未确定的技术只保留范围说明。
 
-共享 UI skill 保持不变。两个 Oriel 本地 skill 遇到要求冲突或值得复用的补充时，先询问用户是否更新 skill 本身。
+Oriel 专属的 UI 要求保存在项目设计文档中；共享 UI skill 的通用指导按用户明确要求维护。两个 Oriel 本地 skill 遇到要求冲突或值得复用的补充时，按开发约定处理。
 
 ## 资料边界
 

@@ -10,6 +10,7 @@
     "frontendDist": "../dist"
   },
   "app": {
+    "withGlobalTauri": true,
     "windows": [
       {
         "label": "main",
@@ -19,13 +20,15 @@
         "minWidth": 360,
         "minHeight": 560,
         "center": true,
+        "decorations": false,
+        "shadow": false,
         "backgroundColor": "#eeedf1"
       }
     ],
     "security": {
       "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-src 'none'",
       "devCsp": "default-src 'self'; connect-src 'self' ws://127.0.0.1:1420; img-src 'self' asset: http://asset.localhost; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-src 'none'",
-      "capabilities": []
+      "capabilities": ["main-window"]
     }
   },
   "bundle": {
