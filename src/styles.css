@@ -1,4 +1,5 @@
 @import url('./styles/showcase.css');
+@import url('./styles/browser.css');
 
 :root {
   font-family: "Segoe UI Variable", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;

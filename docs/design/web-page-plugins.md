@@ -1,0 +1,111 @@
+# 网页接入初版
+
+- 日期：2026-10-21。
+- 状态：内置浏览器及最小网页接入实现；Windows 为原生能力验收平台。
+- 设计边界见[当前设计基线](current-design.md)，确认理由见[决策记录](workspace-and-plugins.md)。
+
+## 目录与职责
+
+```text
+plugins/builtin/browser/         内置浏览器声明与 Vue 界面
+src/                            宿主外壳、能力展示入口与本地调用
+src-tauri/src/                   原生网页容器、调用守卫及 Windows 适配
+src-tauri/crates/oriel-core/     平台无关的声明、配置和校验
+```
+
+内置插件随应用打包；宿主按能力类型选择已支持的渲染器，不按每个网址修改路由。独立插件仓库可放在仓库外，通过“浏览设置”的外部插件目录登记。每个目录直接包含 `plugin.json`，不递归扫描其他仓库，也不执行仓库脚本。
+
+兼容网页声明在启动、保存设置或点击“重新加载接入”时读取，无需构建宿主。内置浏览器 Vue 界面随宿主构建；任意插件 UI、动态代码执行、安装更新和独立工具通信仍未实现。
+
+## 插件声明
+
+外部插件示例：
+
+```json
+{
+  "schemaVersion": 1,
+  "id": "example.tools",
+  "name": "我的工具",
+  "version": "0.1.0",
+  "capabilities": ["web-page"],
+  "entries": [
+    {
+      "id": "dashboard",
+      "title": "工作面板",
+      "kind": "web-page",
+      "url": "http://127.0.0.1:8080",
+      "proxy": { "mode": "inherit" }
+    }
+  ]
+}
+```
+
+- 版本 1 仅支持 `web-page` 能力。外部入口类型为 `web-page`；内置插件另可提供临时 `browser` 入口。
+- 插件及入口 ID 以小写 ASCII 字母或数字开头，仅含小写字母、数字、点、下划线与连字符；完整 ID 不超过 128 字节，不以点结尾，不使用 Windows 保留文件名。入口运行身份为 `<插件 ID>.<入口 ID>`，不得重名；`user` 插件名及 `user.` 命名空间留给用户网页。这些约束避免 Windows 文件系统上的大小写或文件名冲突。
+- 标题为 1–80 个字符，固定网页需要 HTTP／HTTPS 地址。宿主内部地址、其他协议及包含账号密码的 URL 不接受。
+- 不支持的声明、重复身份或无效入口使该插件声明加载失败，已登记的其他入口保留，界面显示诊断。配置及声明文件最大为 2 MiB。
+- 外部入口的默认配置来自声明；当前界面可编辑用户自行添加的网页，修改外部入口通过更新声明后重新加载。
+
+## 本地配置与身份
+
+宿主配置位于 Tauri 应用配置目录下的 `workspace.json`：
+
+```json
+{
+  "version": 1,
+  "pluginDirectories": [],
+  "webEntries": [],
+  "defaultProxy": { "mode": "system" }
+}
+```
+
+`webEntries` 保存用户添加的网页，包含稳定 `id`、`title`、`kind: "web-page"`、`url` 及 `proxy`；ID 由宿主生成。入口顺序按内置、外部声明及用户登记顺序展示，尚未提供拖拽排序或默认入口编辑。启动打开首页，移除当前网页入口后回到首页。
+
+写入前完成校验，先写同目录临时文件并同步，再替换配置；成功后才更新内存。配置损坏、版本不支持或校验失败时保留原文件，仍可使用内置浏览器，但阻止保存配置；修复或移走原文件后重新加载。界面错误会提供配置文件位置。
+
+原生数据位于应用本地数据目录的 `web-profiles/<完整入口 ID>/`。每个入口独立保存 Cookie、缓存、网站存储和原生密码；同一网站登记为不同入口时也彼此独立。修改名称不改变身份和数据目录；移除入口默认保留数据。密码清除与移除入口是不同操作，当前未提供浏览数据目录的自动清理。
+
+## 浏览、密码与代理
+
+工具栏提供地址栏、上一页、下一页、刷新／停止和设置；原生导航事件同步地址、标题、历史状态及错误，包括重定向与单页应用地址变化。没有协议的普通域名补 HTTPS，本机地址补 HTTP。地址栏只影响当前浏览，不改写网页登记的初始地址。
+
+每个入口按需创建独立子 WebView；切换只隐藏，不销毁页面或重置登录。新窗口请求创建受控临时网页窗口，继承发起入口的代理和浏览数据。管理弹窗打开时隐藏网页，关闭后恢复，窗口大小变化时同步原生内容区域。
+
+Windows 使用 WebView2 原生密码保存、更新提示及登录填充。Oriel 不另做账号列表，不读取 Edge／Chrome 密码库，不把密码传入 Vue、配置或日志。是否识别登录表单由引擎与网站决定。“清除此入口的密码”使用原生 PasswordAutosave 数据类型，等待完成后刷新页面，不清除 Cookie 或退出登录。参考 [WebView2 密码接口](https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/icorewebview2settings4)、[浏览数据清除接口](https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/icorewebview2profile2)。
+
+默认代理可为 `system`、`direct` 或 `custom`；网页可继承默认，或使用 `direct`／`custom` 覆盖。自定义代理示例：
+
+```json
+{ "mode": "custom", "address": "socks5://127.0.0.1:1080" }
+```
+
+首版支持不带认证的 HTTP 和 SOCKS5 地址；不接受代理用户名、密码、路径、查询或片段。默认代理初始跟随系统。该设置作用于宿主网页能力，不改变操作系统代理，也不自动代理未来其他插件的任意网络请求。
+
+代理或固定网址变化时重建受影响的网页实例；代理变化保留当前网址和原有数据目录，浏览历史随实例重建。关闭对应临时窗口并等待旧浏览器进程释放后再创建，超时显示重试提示，绝不改用直连作为失败回退。
+
+## 宿主接口与权限
+
+本地界面通过 `workspace_snapshot`、`workspace_reload`、`workspace_save_entry`、`workspace_delete_entry`、`workspace_settings` 管理网页与配置；通过 `web_show`、`web_navigate`、`web_action`、`web_clear_passwords` 调用网页能力。`web-session` 事件只发送到本地主 WebView，提供网址、标题、加载、前进后退及错误状态，不传递凭证。
+
+`main-window` capability 使用精确 `webviews: ["main"]`，不按整个窗口授权；每个新增命令另验证主 WebView 身份及本地来源。外部网页及临时窗口没有宿主权限，关闭原生 WebMessage 与 HostObjects 接口。宿主本身继续禁止 iframe，网页通过独立原生视图显示。具体权限模型不等于操作系统沙箱。
+
+## 验证入口
+
+```bash
+npm run build
+cargo test --manifest-path src-tauri/Cargo.toml -p oriel-core --locked
+```
+
+Windows 环境具备既有工具链时构建调试应用，再运行原生检查：
+
+```powershell
+$env:CARGO_TARGET_DIR = "$PWD\target\windows"
+cargo build --manifest-path src-tauri/Cargo.toml --locked
+npm run check:browser
+```
+
+原生检查使用 Node 内置 CDP 客户端、本机测试站点与 HTTP／SOCKS5 代理，所有应用配置、网页数据及截图写入新建的 `target/browser-check/` 子目录。检查用本地静态服务器需要端口 1420 未占用。仅调试构建识别 `ORIEL_DEV_DATA_DIR` 隔离数据，Release 忽略该变量；正常运行不启用远程调试。
+
+自动检查覆盖界面添加、编辑与移除网页、原生导航、SPA 地址变化、密码清除保留 Cookie、远程页面调用边界、弹窗、入口隔离、外部声明、代理、重启持久化及窄屏布局。脚本会尝试在隔离测试账号上操作原生保存提示；无法完成时明确记录需人工验收，不将保存和再次填充标为通过。
+
+2026-10-21 浏览器实现阶段验证：前端类型检查与生产构建、12 项核心测试和 16 项隔离 Windows 原生检查通过；Windows Release 程序构建通过，浅色桌面与深色窄屏截图已审查。密码清除和 Cookie 保留已验证，保存提示与再次填充未完成人工验收。随后新增根目录打包脚本并生成当前版本 NSIS 安装包，核对生成的安装脚本包含内置浏览器声明，未执行安装程序。打包用法见[项目说明](../../README.md)。

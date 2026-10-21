@@ -1,8 +1,10 @@
 {
   "identifier": "main-window",
-  "description": "仅允许本地主窗口执行基本窗口操作并同步主题图标。",
-  "windows": ["main"],
+  "description": "仅允许本地 main WebView 执行窗口操作与接入管理；外部网页不继承宿主权限。",
+  "webviews": ["main"],
   "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
     "core:window:allow-minimize",
     "core:window:allow-toggle-maximize",
     "core:window:allow-internal-toggle-maximize",

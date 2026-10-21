@@ -1,6 +1,6 @@
 <script setup lang="ts">
 defineProps<{
-  name: 'home' | 'sun' | 'moon' | 'pause' | 'play' | 'minimize' | 'maximize' | 'restore' | 'close'
+  name: 'home' | 'sun' | 'moon' | 'pause' | 'play' | 'minimize' | 'maximize' | 'restore' | 'close' | 'globe' | 'back' | 'forward' | 'refresh' | 'key' | 'settings' | 'plus'
 }>()
 </script>
 
@@ -17,7 +17,16 @@ defineProps<{
     aria-hidden="true"
     focusable="false"
   >
-    <template v-if="name === 'home'">
+    <template v-if="name === 'globe'">
+      <circle cx="12" cy="12" r="9" /><ellipse cx="12" cy="12" rx="4" ry="9" /><path d="M3 12h18" />
+    </template>
+    <path v-else-if="name === 'back'" d="m14 6-6 6 6 6" />
+    <path v-else-if="name === 'forward'" d="m10 6 6 6-6 6" />
+    <template v-else-if="name === 'refresh'"><path d="M20 7v5h-5M20 12a8 8 0 1 0-2.3 5.7" /></template>
+    <template v-else-if="name === 'key'"><circle cx="8" cy="8" r="4.5" /><path d="m11.3 11.3 9.2 9.2m-3-3 3-3m-6 0 3-3" /></template>
+    <template v-else-if="name === 'settings'"><path d="M4 7h16M4 17h16" /><circle cx="9" cy="7" r="2.5" fill="var(--shell)" /><circle cx="15" cy="17" r="2.5" fill="var(--shell)" /></template>
+    <path v-else-if="name === 'plus'" d="M12 5v14M5 12h14" />
+    <template v-else-if="name === 'home'">
       <path d="m3.5 10 7-6a2.3 2.3 0 0 1 3 0l7 6" />
       <path d="M5.5 8.5V19a1.5 1.5 0 0 0 1.5 1.5h10a1.5 1.5 0 0 0 1.5-1.5V8.5" />
       <path d="M9.5 20.5v-7h5v7" />

@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "id": "oriel.browser",
+  "name": "浏览器",
+  "version": "0.1.0",
+  "capabilities": ["web-page"],
+  "entries": [
+    { "id": "browser", "title": "浏览器", "kind": "browser" }
+  ]
+}

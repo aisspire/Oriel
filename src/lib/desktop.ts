@@ -12,9 +12,15 @@ interface DesktopWindow {
 
 interface TauriWindow extends Window {
   __TAURI__?: {
+    core: { invoke: <T>(command: string, args?: Record<string, unknown>) => Promise<T> }
+    event: { listen: <T>(event: string, handler: (event: { payload: T }) => void) => Promise<() => void> }
     window: { getCurrentWindow(): DesktopWindow }
     image: { Image: { new: (rgba: number[], width: number, height: number) => Promise<DesktopImage> } }
   }
+}
+
+export function getDesktopApi() {
+  return (window as TauriWindow).__TAURI__
 }
 
 // The public global API is injected by Tauri; browser previews have no native controls.
