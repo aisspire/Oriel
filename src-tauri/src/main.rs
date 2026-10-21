@@ -35,10 +35,29 @@ fn main() {
             web_pages::workspace_browser_sidebar,
             web_pages::workspace_settings,
             web_pages::web_show,
+            web_pages::web_prepare,
             web_pages::web_navigate,
             web_pages::web_action,
             web_pages::web_clear_passwords,
         ])
-        .run(context)
-        .expect("Oriel could not start");
+        .build(context)
+        .expect("Oriel could not start")
+        .run(|app, event| {
+            use std::sync::atomic::{AtomicBool, Ordering};
+            static CLEANING: AtomicBool = AtomicBool::new(false);
+            static CLEANED: AtomicBool = AtomicBool::new(false);
+            if let tauri::RunEvent::ExitRequested { api, .. } = event {
+                if !CLEANED.load(Ordering::SeqCst) {
+                    api.prevent_exit();
+                    if !CLEANING.swap(true, Ordering::SeqCst) {
+                        let app = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            web_pages::shutdown(app.clone()).await;
+                            CLEANED.store(true, Ordering::SeqCst);
+                            app.exit(0);
+                        });
+                    }
+                }
+            }
+        });
 }

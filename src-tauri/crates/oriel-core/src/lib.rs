@@ -1,4 +1,5 @@
 //! Platform-independent registration and local configuration for Oriel.
+pub mod services;
 pub mod window_state;
 
 use serde::{Deserialize, Serialize};
@@ -99,6 +100,10 @@ pub struct WebEntry {
     pub url: Option<String>,
     #[serde(default)]
     pub proxy: ProxyPolicy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prerequisites: Vec<services::Prerequisite>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -110,6 +115,8 @@ pub struct PluginManifest {
     pub version: String,
     pub capabilities: Vec<String>,
     pub entries: Vec<WebEntry>,
+    #[serde(default)]
+    pub lifecycle: Option<services::Lifecycle>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -176,6 +183,7 @@ pub struct Snapshot {
     pub diagnostics: Vec<String>,
     pub writable: bool,
     pub browser_sidebar: BrowserSidebar,
+    pub services: Vec<services::ServiceDeclaration>,
 }
 
 pub fn valid_id(id: &str) -> bool {
@@ -256,9 +264,22 @@ fn validate_entry(entry: &mut WebEntry) -> Result<()> {
         return Err("网页名称须为 1–80 个字符。".into());
     }
     entry.proxy.validate(false)?;
-    if entry.kind == EntryKind::WebPage {
+    for dependency in &entry.prerequisites {
+        if !valid_id(&dependency.plugin_id) || !valid_id(&dependency.rule_id) {
+            return Err("前置资源须引用有效的插件及稳定规则 ID。".into());
+        }
+    }
+    if entry.service.is_some() && entry.url.is_some() {
+        return Err("服务页面地址应由后台返回，不能同时声明固定 URL。".into());
+    }
+    if entry.service.as_deref().is_some_and(|id| !valid_id(id)) {
+        return Err("页面服务提供方 ID 无效。".into());
+    }
+    if entry.kind == EntryKind::WebPage && entry.service.is_none() {
         entry.url = Some(normalize_url(entry.url.as_deref().unwrap_or(""))?);
-    } else if entry.url.is_some() {
+    } else if entry.kind == EntryKind::Browser
+        && (entry.url.is_some() || entry.service.is_some() || !entry.prerequisites.is_empty())
+    {
         return Err("浏览器插件入口不能声明固定网址。".into());
     }
     Ok(())
@@ -392,23 +413,45 @@ impl ConfigStore {
             diagnostics: self.load_error.iter().cloned().collect(),
             writable: self.load_error.is_none(),
             browser_sidebar: self.workspace.browser_sidebar.clone(),
+            services: vec![],
         };
         let mut plugin_ids = HashSet::new();
         let mut entry_ids = HashSet::new();
-        let mut register = |text: &str, builtin: bool| -> Result<()> {
+        let mut register = |text: &str, builtin: bool, directory: Option<&Path>| -> Result<()> {
             let mut plugin: PluginManifest =
                 serde_json::from_str(text).map_err(|_| "插件声明格式无效。")?;
-            if plugin.schema_version != 1
+            if ![1, 2].contains(&plugin.schema_version)
                 || !valid_id(&plugin.id)
                 || plugin.id == "user"
                 || plugin.id.starts_with("user.")
                 || plugin.name.trim().is_empty()
                 || plugin.version.trim().is_empty()
-                || plugin.capabilities != ["web-page"]
+                || if plugin.lifecycle.is_some() {
+                    plugin.schema_version != 2
+                        || plugin.capabilities != ["web-page", "local-service-v1"]
+                } else {
+                    plugin.capabilities != ["web-page"]
+                }
+                || plugin.schema_version == 1
+                    && (plugin.lifecycle.is_some()
+                        || plugin
+                            .entries
+                            .iter()
+                            .any(|e| e.service.is_some() || !e.prerequisites.is_empty()))
                 || plugin_ids.contains(&plugin.id)
             {
                 return Err("插件身份、声明版本或能力无效／重复。".into());
             }
+            let service = if let Some(lifecycle) = &plugin.lifecycle {
+                let directory = directory.ok_or("内置声明不启动外部脚本。")?;
+                Some(services::ServiceDeclaration::validate(
+                    plugin.id.clone(),
+                    directory,
+                    lifecycle.clone(),
+                )?)
+            } else {
+                None
+            };
             let mut pending_ids = HashSet::new();
             for entry in &mut plugin.entries {
                 validate_entry(entry)?;
@@ -423,6 +466,9 @@ impl ConfigStore {
                     return Err("插件入口 ID 重复或过长。".into());
                 }
             }
+            if let Some(service) = service {
+                snapshot.services.push(service);
+            }
             plugin_ids.insert(plugin.id);
             entry_ids.extend(pending_ids);
             snapshot
@@ -434,11 +480,12 @@ impl ConfigStore {
                 }));
             Ok(())
         };
-        if let Err(error) = register(builtin, true) {
+        if let Err(error) = register(builtin, true, None) {
             snapshot.diagnostics.push(format!("内置浏览器：{error}"));
         }
         for directory in &self.workspace.plugin_directories {
-            match read_json(&directory.join("plugin.json")).and_then(|text| register(&text, false))
+            match read_json(&directory.join("plugin.json"))
+                .and_then(|text| register(&text, false, Some(directory)))
             {
                 Ok(()) => (),
                 Err(error) => snapshot
@@ -471,14 +518,18 @@ impl ConfigStore {
     ) -> Result<String> {
         let mut next = self.workspace.clone();
         let id = id.unwrap_or_else(|| format!("user.{}", unique_id()));
-        let entry = WebEntry {
+        let mut entry = WebEntry {
             id: id.clone(),
             title,
             kind: EntryKind::WebPage,
             url: Some(url),
             proxy,
+            service: None,
+            prerequisites: vec![],
         };
         if let Some(old) = next.web_entries.iter_mut().find(|e| e.id == id) {
+            entry.service = old.service.clone();
+            entry.prerequisites = old.prerequisites.clone();
             *old = entry;
         } else {
             if !id.starts_with("user.") {
@@ -841,5 +892,60 @@ mod tests {
             .is_err());
         assert_eq!(fs::read(dir.config()).unwrap(), before);
         assert_eq!(store.workspace.web_entries.len(), 1);
+    }
+    #[test]
+    fn service_execution_requires_explicit_capability_and_valid_entrypoint() {
+        let dir = TestDir::new();
+        fs::write(dir.0.join("oriel.ps1"), "# isolated fixture").unwrap();
+        let mut store = ConfigStore::open(dir.config());
+        let mut next = store.workspace.clone();
+        next.plugin_directories = vec![dir.0.clone()];
+        store.commit(next).unwrap();
+        let mut manifest = serde_json::json!({"schemaVersion":2,"id":"example.service","name":"service","version":"1","capabilities":["web-page"],"lifecycle":{"protocol":"stdio-v1","entrypoint":"oriel.ps1"},"entries":[{"id":"page","title":"工具","kind":"web-page","service":"example.service"}]});
+        fs::write(dir.0.join("plugin.json"), manifest.to_string()).unwrap();
+        let snapshot = store.snapshot(BUILTIN);
+        assert_eq!(snapshot.entries.len(), 1);
+        assert!(!snapshot.diagnostics.is_empty());
+        assert!(snapshot.services.is_empty());
+        manifest["capabilities"] = serde_json::json!(["web-page", "local-service-v1"]);
+        fs::write(dir.0.join("plugin.json"), manifest.to_string()).unwrap();
+        let snapshot = store.snapshot(BUILTIN);
+        assert_eq!(snapshot.entries.len(), 2);
+        assert_eq!(snapshot.services.len(), 1);
+        assert!(snapshot.diagnostics.is_empty());
+        manifest["lifecycle"]["entrypoint"] = serde_json::json!("missing.ps1");
+        fs::write(dir.0.join("plugin.json"), manifest.to_string()).unwrap();
+        assert_eq!(store.snapshot(BUILTIN).entries.len(), 1);
+    }
+    #[test]
+    fn webpage_edits_preserve_stable_resource_references() {
+        let dir = TestDir::new();
+        let mut store = ConfigStore::open(dir.config());
+        let id = store
+            .save_entry(
+                None,
+                "页面".into(),
+                "http://localhost:18080".into(),
+                ProxyPolicy::Direct,
+            )
+            .unwrap();
+        let mut next = store.workspace.clone();
+        next.web_entries[0].prerequisites = vec![services::Prerequisite {
+            plugin_id: "tether".into(),
+            rule_id: "ops-web".into(),
+        }];
+        store.commit(next).unwrap();
+        store
+            .save_entry(
+                Some(id),
+                "改名".into(),
+                "http://localhost:18080/new".into(),
+                ProxyPolicy::Direct,
+            )
+            .unwrap();
+        assert_eq!(
+            store.workspace.web_entries[0].prerequisites[0].rule_id,
+            "ops-web"
+        );
     }
 }

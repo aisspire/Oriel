@@ -1,0 +1,7 @@
+{
+    "git.autoRepositoryDetection": true,
+    "git.scanRepositories": [
+        "plugins/external/tether"
+    ],
+    "scm.alwaysShowRepositories": true
+}

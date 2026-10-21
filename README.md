@@ -98,3 +98,7 @@ docs/design/         当前设计、视觉说明与决策记录
 - [当前设计基线](docs/design/current-design.md)
 - [首页与界面设计](docs/design/home-and-identity.md)
 - [开发约定](AGENTS.md)
+
+### 本地工具与前置资源
+
+Windows 已支持版本 2 的 `local-service-v1` 声明、规则前置等待和完整退出清理。独立工具保持自身构建、页面和业务配置；Oriel 只保存插件目录与稳定规则引用。接入方式、受信任目录执行边界及隔离联调见[本地服务与前置资源](docs/design/local-services.md)。

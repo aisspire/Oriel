@@ -14,7 +14,7 @@ const cleared = ref(false)
 const address = ref(props.entry.url ?? '')
 const dirtyAddress = ref(false)
 const surface = useTemplateRef<HTMLElement>('surface')
-const { state, error, busy, run, synchronize } = useWebSession(() => props.entry, () => props.supported, () => props.suspended || passwordDialog.value, surface)
+const { state, error, busy, preparing, run, retry } = useWebSession(() => props.entry, () => props.supported, () => props.suspended || passwordDialog.value, surface)
 const available = computed(() => props.supported && !busy.value)
 
 watch(() => props.entry.id, () => { address.value = props.entry.url ?? ''; dirtyAddress.value = false; closePasswords() })
@@ -64,8 +64,9 @@ onUnmounted(() => passwords.value?.close())
       </div>
       <WindowControls class="browser-window-controls" />
     </header>
+    <div v-if="preparing" class="browser-error" role="status"><span>正在准备前置资源，可打开提供方页面处理认证。</span></div>
     <div v-if="error || state.error" class="browser-error" role="alert">
-      <span>{{ error || state.error }}</span><button class="text-button" type="button" :disabled="busy" @click="state.error ? run('web_action', { action: 'reload' }) : (error = '', synchronize())">重试</button>
+      <span>{{ error || state.error }}</span><button class="text-button" type="button" :disabled="busy" @click="state.error ? run('web_action', { action: 'reload' }) : retry()">重试</button>
     </div>
     <div class="load-progress" :class="{ 'is-loading': state.loading }" role="status" :aria-label="state.loading ? '网页加载中' : '加载完成'"></div>
     <div ref="surface" class="web-surface">

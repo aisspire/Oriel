@@ -115,6 +115,9 @@ pub struct WebPages {
     resume_urls: Mutex<HashMap<String, String>>,
     display: Mutex<Display>,
     operation: tauri::async_runtime::Mutex<()>,
+    services: Arc<Mutex<oriel_core::services::Services>>,
+    prepared: Mutex<HashMap<String, Option<String>>>,
+    preparation_errors: Mutex<HashMap<String, String>>,
 }
 
 #[derive(Serialize)]
@@ -155,6 +158,9 @@ impl WebPages {
             resume_urls: Mutex::default(),
             display: Mutex::default(),
             operation: tauri::async_runtime::Mutex::new(()),
+            services: Arc::default(),
+            prepared: Mutex::default(),
+            preparation_errors: Mutex::default(),
         })
     }
 
@@ -313,6 +319,16 @@ impl WebPages {
                 .get_webview(&label)
                 .ok_or("网页实例已关闭，请重新加载接入。".into());
         }
+        let page_url = if entry.entry.service.is_some() || !entry.entry.prerequisites.is_empty() {
+            self.prepared
+                .lock()
+                .unwrap()
+                .get(id)
+                .cloned()
+                .ok_or("请先完成前置资源，失败后显式重试。")?
+        } else {
+            None
+        };
         let profile = self.data_root.join("web-profiles").join(id);
         std::fs::create_dir_all(&profile).map_err(|e| format!("无法创建网页数据目录：{e}"))?;
         let label = format!("web-{}", unique_id());
@@ -321,6 +337,7 @@ impl WebPages {
             .lock()
             .unwrap()
             .remove(id)
+            .or(page_url)
             .or_else(|| entry.entry.url.clone())
             .unwrap_or_default();
         let state = WebSessionState {
@@ -787,4 +804,84 @@ pub async fn web_clear_passwords(
     let view = runtime.ensure(&app, &entry_id).await?;
     platform::clear_passwords(&view).await?;
     view.reload().map_err(|e| e.to_string())
+}
+
+// An explicit preflight runs outside the surface lock. Opening Tether to answer
+// authentication remains possible while a dependent page is waiting.
+#[tauri::command]
+pub async fn web_prepare(
+    caller: Webview,
+    request: tauri::ipc::Request<'_>,
+    runtime: tauri::State<'_, WebPages>,
+    entry_id: String,
+    retry: bool,
+) -> Result<()> {
+    authorize(&caller, &request)?;
+    if runtime.sessions.lock().unwrap().contains_key(&entry_id) {
+        return Ok(());
+    }
+    if retry {
+        runtime.preparation_errors.lock().unwrap().remove(&entry_id);
+    }
+    if let Some(error) = runtime
+        .preparation_errors
+        .lock()
+        .unwrap()
+        .get(&entry_id)
+        .cloned()
+    {
+        return Err(error);
+    }
+    let (entry, _) = runtime.entry(&entry_id)?;
+    let declarations = runtime
+        .store
+        .lock()
+        .unwrap()
+        .snapshot(&runtime.builtin)
+        .services;
+    let services = runtime.services.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        oriel_core::services::Services::prepare(&services, &declarations, &entry.entry)
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    let page = match result {
+        Ok(page) => page,
+        Err(error) => {
+            runtime
+                .preparation_errors
+                .lock()
+                .unwrap()
+                .insert(entry_id, error.clone());
+            return Err(error);
+        }
+    };
+    runtime.prepared.lock().unwrap().insert(entry_id, page);
+    Ok(())
+}
+pub async fn shutdown(app: AppHandle) {
+    let runtime = app.state::<WebPages>();
+    // End dependent native views before requesting provider cleanup.
+    let labels = runtime
+        .sessions
+        .lock()
+        .unwrap()
+        .values()
+        .map(|s| s.label.clone())
+        .collect::<Vec<_>>();
+    for label in labels {
+        if let Some(view) = app.get_webview(&label) {
+            let _ = view.close();
+        }
+    }
+    let services = runtime.services.clone();
+    if let Ok(errors) = tauri::async_runtime::spawn_blocking(move || {
+        oriel_core::services::Services::shutdown(&services)
+    })
+    .await
+    {
+        for error in errors {
+            eprintln!("插件退出清理：{error}");
+        }
+    }
 }

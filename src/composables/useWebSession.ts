@@ -6,9 +6,13 @@ export function useWebSession(entry: () => WebEntry, supported: () => boolean, s
   const state = ref<WebSessionState>(emptySession(entry()))
   const error = ref('')
   const busy = ref(false)
+  const preparing = ref(false)
+  const retries = new Set<string>()
   let alive = false
   let frame = 0
   let running = false
+  const preparation = new Map<string,Promise<void>>()
+  const attempted = new Set<string>()
   let dirty = false
   let unlisten: (() => void) | undefined
   let observer: ResizeObserver | undefined
@@ -22,6 +26,19 @@ export function useWebSession(entry: () => WebEntry, supported: () => boolean, s
       const id = entry().id
       const bounds = surface.value.getBoundingClientRect()
       try {
+        // Surface resizing and page switching never retry a cancelled preflight.
+        if (!attempted.has(id)) {
+          attempted.add(id)
+          preparing.value=true
+          const task=hostCommand<void>('web_prepare',{entryId:id,retry:retries.delete(id)})
+          preparation.set(id,task)
+          await task
+        } else {
+          const pending=preparation.get(id)
+          if (pending) await pending
+        }
+        if (!alive) break
+        if (id !== entry().id) {dirty=true;continue}
         const result = await hostCommand<WebSessionState | null>('web_show', {
           entryId: id, bounds: { x: bounds.x, y: bounds.y, width: Math.max(1, bounds.width), height: Math.max(1, bounds.height) },
           visible: !suspended(),
@@ -29,7 +46,7 @@ export function useWebSession(entry: () => WebEntry, supported: () => boolean, s
         if (alive && id === entry().id && result) state.value = result
       } catch (cause) {
         if (alive && id === entry().id) error.value = errorText(cause)
-      }
+      } finally { preparing.value=false }
     } while (dirty && alive)
     running = false
   }
@@ -72,5 +89,6 @@ export function useWebSession(entry: () => WebEntry, supported: () => boolean, s
     window.removeEventListener('resize', schedule)
     void hideWebSurface().catch(() => {})
   })
-  return { state, error, busy, run, synchronize: schedule }
+  function retry() { retries.add(entry().id); attempted.delete(entry().id); preparation.delete(entry().id); error.value=''; schedule() }
+  return { state, error, busy, preparing, run, synchronize: schedule, retry }
 }

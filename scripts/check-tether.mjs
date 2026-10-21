@@ -1,0 +1,61 @@
+// Cross-repository Windows integration. The tool fixture stays in its own repository.
+import assert from 'node:assert/strict'
+import {spawn,execFileSync} from 'node:child_process'
+import {createServer} from 'node:http'
+import net from 'node:net'
+import crypto from 'node:crypto'
+import {createRequire} from 'node:module'
+import {mkdir,writeFile,readFile,readdir,mkdtemp} from 'node:fs/promises'
+import path from 'node:path'
+import {Cdp} from './lib/cdp.mjs'
+if(process.platform!=='win32')throw new Error('Run with Windows Node after building both Windows debug executables')
+const root=path.resolve('.'),tether=path.resolve(process.env.TETHER_REPO??'plugins/external/tether')
+const {Server}=createRequire(path.join(tether,'package.json'))('ssh2')
+const data=await mkdtemp(path.join(root,'target/tether-check-'))
+const user=execFileSync('whoami',[],{encoding:'utf8'}).trim();execFileSync('icacls',[data,'/inheritance:r','/grant:r',`${user}:(OI)(CI)F`])
+const delay=ms=>new Promise(r=>setTimeout(r,ms))
+async function until(fn,label,timeout=25000){const end=Date.now()+timeout;let error;while(Date.now()<end){try{const x=await fn();if(x)return x}catch(e){error=e}await delay(100)}throw new Error(`Timeout ${label}: ${error?.message??''}`)}
+async function listen(s){await new Promise((r,j)=>{s.once('error',j);s.listen(0,'127.0.0.1',r)});return s.address().port}
+async function freePort(){const s=net.createServer();const p=await listen(s);await new Promise(r=>s.close(r));return p}
+async function activePort(dir){for(const item of await readdir(dir,{withFileTypes:true})){const p=path.join(dir,item.name);if(item.name==='DevToolsActivePort')return Number((await readFile(p,'utf8')).split('\n')[0]);if(item.isDirectory()){const x=await activePort(p);if(x)return x}}}
+async function profile(dir,predicate){return until(async()=>{const p=await activePort(dir);if(!p)return;const targets=await(await fetch(`http://127.0.0.1:${p}/json/list`)).json();const target=targets.find(t=>t.type==='page'&&predicate(t));if(target)return new Cdp().connect(target.webSocketDebuggerUrl)},'CDP profile')}
+let requests=0,authMode='publickey';const clients=new Set();
+const hostKey=crypto.generateKeyPairSync('rsa',{modulusLength:2048,privateKeyEncoding:{type:'pkcs1',format:'pem'},publicKeyEncoding:{type:'spki',format:'pem'}}).privateKey
+const sshd=new Server({hostKeys:[hostKey]},c=>{clients.add(c);c.on('error',()=>{}).on('close',()=>clients.delete(c));c.on('authentication',ctx=>{if(ctx.username==='fixture'&&(authMode==='publickey'&&ctx.method==='publickey'||authMode==='password'&&ctx.method==='password'&&ctx.password==='isolated-password'))ctx.accept();else ctx.reject(['publickey','password'])});c.on('ready',()=>c.on('tcpip',(accept,reject,info)=>{if(info.destIP!=='127.0.0.1'){reject();return}const s=net.connect(info.destPort,'127.0.0.1',()=>{const ch=accept();ch.pipe(s).pipe(ch)});s.on('error',()=>reject())}))})
+const sshPort=await listen(sshd)
+const fixture=createServer((req,res)=>{requests++;res.setHeader('Content-Type','text/html');res.end('<title>Tether dependency fixture</title><h1>Ready over SSH</h1>')});const fixturePort=await listen(fixture)
+const forwardPort=await freePort(),authPort=await freePort(),externalPort=await freePort(),exitPort=await freePort()
+const key=path.join(data,'identity');execFileSync('ssh-keygen',['-q','-t','ed25519','-N','','-f',key]);const sshConfig=path.join(data,'ssh-config'),quote=p=>p.replaceAll('\\','/')
+await writeFile(sshConfig,`Host fixture\n HostName 127.0.0.1\n Port ${sshPort}\n User fixture\n IdentityFile "${quote(key)}"\n IdentitiesOnly yes\n UserKnownHostsFile "${quote(path.join(data,'known-hosts'))}"\n StrictHostKeyChecking accept-new\n`)
+const toolData=path.join(data,'tool');await mkdir(toolData);await writeFile(path.join(toolData,'config.json'),JSON.stringify({version:1,hosts:[{id:'h',name:'隔离主机',destination:'fixture',configFile:sshConfig,ssh:'ssh',options:[],timeoutSecs:60}],rules:[{id:'web',name:'管理页面',hostId:'h',direction:'local',bind:'127.0.0.1',port:forwardPort,target:'127.0.0.1',targetPort:fixturePort},{id:'auth',name:'认证页面',hostId:'h',direction:'local',bind:'127.0.0.1',port:authPort,target:'127.0.0.1',targetPort:fixturePort},{id:'exit',name:'退出中认证',hostId:'h',direction:'local',bind:'127.0.0.1',port:exitPort,target:'127.0.0.1',targetPort:fixturePort}],theme:'light'}))
+const provider=path.join(data,'provider'),dependent=path.join(data,'dependent');await mkdir(provider);await mkdir(dependent)
+// Copy the actual delivered wrapper; locate its executable beside it, as a release bundle does.
+await writeFile(path.join(provider,'oriel.ps1'),await readFile(path.join(tether,'oriel.ps1')))
+// A symlink would need extra Windows privilege; a local executable copy is sufficient.
+const {copyFile}=await import('node:fs/promises');await copyFile(path.join(tether,'target/windows/debug/tether.exe'),path.join(provider,'tether.exe'))
+const manifest=JSON.parse(await readFile(path.join(tether,'plugin.json'),'utf8'));manifest.lifecycle.args=['-DataDir',toolData];await writeFile(path.join(provider,'plugin.json'),JSON.stringify(manifest))
+const entry=(id,rule='web')=>({id,title:id,kind:'web-page',url:`http://127.0.0.1:${rule==='auth'?authPort:forwardPort}`,proxy:{mode:'direct'},prerequisites:[{pluginId:'tether',ruleId:rule}]})
+await writeFile(path.join(dependent,'plugin.json'),JSON.stringify({schemaVersion:2,id:'fixture',name:'依赖页面',version:'1',capabilities:['web-page'],entries:[entry('one'),entry('two'),entry('auth','auth'),entry('bad','missing'),entry('exit','exit')]}))
+await writeFile(path.join(data,'workspace.json'),JSON.stringify({version:2,pluginDirectories:[provider,dependent],webEntries:[],defaultProxy:{mode:'direct'}}))
+const shellServer=createServer(async(req,res)=>{const pathname=new URL(req.url,'http://localhost').pathname;const file=path.join(root,'dist',pathname==='/'?'index.html':pathname);try{const bytes=await readFile(file);res.setHeader('Content-Type',file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html');res.end(bytes)}catch{res.writeHead(404);res.end()}})
+await new Promise((r,j)=>{shellServer.once('error',j);shellServer.listen(1420,'127.0.0.1',r)})
+const app=spawn(path.join(root,'target/windows/debug/oriel.exe'),[],{env:{...process.env,ORIEL_DEV_DATA_DIR:data,TETHER_UI_DIR:path.join(tether,'dist'),WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:'--remote-debugging-port=0'},stdio:['ignore','pipe','pipe']});let logs='';app.stderr.on('data',b=>logs+=b)
+let shell,toolPage,external;let desc;const results=[];const passed=n=>{results.push(n);console.log('PASS '+n)}
+const host=(command,args)=>shell.evaluate(`window.__TAURI__.core.invoke(${JSON.stringify(command)},${JSON.stringify(args)})`)
+async function api(action,args={}){const r=await fetch(`${desc.origin}/api`,{method:'POST',headers:{'Content-Type':'application/json',Authorization:`Bearer ${desc.token}`},body:JSON.stringify({action,...args})});const j=await r.json();if(!j.ok)throw new Error(j.error);return j.value}
+const show=id=>host('web_show',{entryId:id,bounds:{x:220,y:150,width:650,height:430},visible:true})
+try{
+shell=await profile(path.join(data,'shell'),t=>t.url.startsWith('http://127.0.0.1:1420'))
+await until(()=>shell.evaluate('Boolean(window.__TAURI__?.core)'), 'host IPC ready');
+const snap=await host('workspace_snapshot',{});assert.equal(snap.diagnostics.length,0,JSON.stringify(snap.diagnostics));assert.ok(snap.entries.some(e=>e.id==='tether.workspace'));passed('versioned provider and dependency declarations register without host-specific routing')
+assert.equal(requests,0);await assert.rejects(show('fixture.one'));assert.equal(requests,0);passed('dependent view cannot open before explicit preflight')
+await host('web_prepare',{entryId:'fixture.one',retry:false});desc=JSON.parse(await readFile(path.join(toolData,'instance.json'),'utf8'));let s=await api('status');const group=s.groups.find(g=>g.desired),pid=group.pid;assert.equal(group.state,'running');await show('fixture.one');await until(()=>requests>0,'forwarded page request');passed('real transfer readiness precedes dependent native page creation')
+await host('web_prepare',{entryId:'fixture.two',retry:false});await show('fixture.two');s=await api('status');assert.equal(s.groups.filter(g=>g.desired).length,1);assert.equal(s.groups.find(g=>g.id===group.id).pid,pid);assert.equal(s.groups.find(g=>g.id===group.id).consumers.length,2);passed('two pages share stable rule and original SSH process')
+await host('web_show',{entryId:null,bounds:{x:0,y:0,width:1,height:1},visible:false});await api('stop',{scope:'group',id:group.id});await host('web_prepare',{entryId:'fixture.one',retry:false});await show('fixture.one');assert.ok((await api('status')).groups.every(g=>!g.desired));passed('page hide and revisit never restart a manually stopped connection')
+await assert.rejects(host('web_prepare',{entryId:'fixture.bad',retry:false}));await assert.rejects(host('web_prepare',{entryId:'fixture.bad',retry:false}));passed('failed preflight remains a diagnostic until explicit retry')
+authMode='password';await shell.evaluate(`window.preflightDone=false;window.preflightError='';void window.__TAURI__.core.invoke('web_prepare',{entryId:'fixture.auth',retry:false}).then(()=>window.preflightDone=true,e=>window.preflightError=String(e))`)
+await until(async()=>(await api('status')).prompts[0],'auth request');await host('web_prepare',{entryId:'tether.workspace',retry:false});await show('tether.workspace');toolPage=await profile(path.join(data,'web-profiles/tether.workspace'),t=>t.url.startsWith(desc.origin));await until(()=>toolPage.evaluate(`Boolean(document.querySelector('#auth-answer'))`),'native Tether prompt');assert.notEqual(await toolPage.evaluate(`Promise.race([window.__TAURI__.core.invoke('workspace_snapshot').then(()=>'allowed',()=>'denied'),new Promise(r=>setTimeout(()=>r('blocked'),800))])`),'allowed');await toolPage.evaluate(`(()=>{const i=document.querySelector('#auth-answer');i.value='isolated-password';i.dispatchEvent(new Event('input',{bubbles:true}));document.querySelector('.authentication form').requestSubmit()})()`);await until(()=>shell.evaluate(`window.preflightDone||window.preflightError`),'auth preflight');assert.equal(await shell.evaluate(`window.preflightError`),'');await show('fixture.auth');passed('provider UI handles authentication while dependent preflight waits, without host API permissions')
+external=spawn('ssh',['-N','-T','-F',sshConfig,'-L',`127.0.0.1:${externalPort}:127.0.0.1:${fixturePort}`,'fixture'],{stdio:'ignore'});authMode='publickey';await until(async()=>{try{return(await fetch(`http://127.0.0.1:${externalPort}`)).ok}catch{return false}},'external fixture SSH')
+authMode='password';await shell.evaluate(`void window.__TAURI__.core.invoke('web_prepare',{entryId:'fixture.exit',retry:false}).catch(()=>{})`);await until(async()=>(await api('status')).prompts[0],'authentication pending before exit');toolPage.close();toolPage=null;await shell.evaluate(`setTimeout(()=>void window.__TAURI__.window.getCurrentWindow().close(),100)`);await until(()=>app.exitCode!==null,'normal Oriel exit',20000);await assert.rejects(fetch(`http://127.0.0.1:${authPort}`));assert.equal(external.exitCode,null);assert.equal((await fetch(`http://127.0.0.1:${externalPort}`)).ok,true);passed('complete Oriel exit cancels pending authentication and owned forwards while preserving unrelated native SSH')
+console.log(JSON.stringify({data,passed:results.length,results},null,2))
+}finally{shell?.close();toolPage?.close();if(app.exitCode===null)app.kill();external?.kill();for(const c of clients)c.end();sshd.close();fixture.close();shellServer.close();if(logs)console.log(logs)}
