@@ -34,6 +34,24 @@ mod platform {
 
 type Result<T> = std::result::Result<T, String>;
 const BUILTIN: &str = include_str!("../../plugins/builtin/browser/plugin.json");
+const MAX_FAVICON_BYTES: usize = 256 * 1024;
+
+fn valid_favicon(image: &[u8]) -> bool {
+    image.len() >= 24
+        && image.len() <= MAX_FAVICON_BYTES
+        && image.starts_with(b"\x89PNG\r\n\x1a\n")
+        && &image[12..16] == b"IHDR"
+        && (1..=1024).contains(&u32::from_be_bytes(image[16..20].try_into().unwrap()))
+        && (1..=1024).contains(&u32::from_be_bytes(image[20..24].try_into().unwrap()))
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WebFavicon {
+    entry_id: String,
+    registered_url: String,
+    image: Vec<u8>,
+}
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -106,6 +124,7 @@ pub struct HostSnapshot {
     snapshot: Snapshot,
     browser_supported: bool,
     config_path: String,
+    favicons: HashMap<String, Vec<u8>>,
 }
 
 impl WebPages {
@@ -140,15 +159,34 @@ impl WebPages {
     }
 
     fn snapshot(&self) -> HostSnapshot {
+        let snapshot = self.store.lock().unwrap().snapshot(&self.builtin);
+        let favicons = snapshot
+            .entries
+            .iter()
+            .filter_map(|entry| {
+                let url = entry.entry.url.as_deref()?;
+                let path = self.data_root.join("favicons").join(&entry.entry.id);
+                if std::fs::metadata(&path).ok()?.len() > (MAX_FAVICON_BYTES + 8193) as u64 {
+                    return None;
+                }
+                let cached = std::fs::read(path).ok()?;
+                let separator = cached.iter().position(|byte| *byte == b'\n')?;
+                let origin_url = std::str::from_utf8(&cached[..separator]).ok()?;
+                let image = &cached[separator + 1..];
+                (oriel_core::same_web_origin(url, origin_url) && valid_favicon(image))
+                    .then(|| (entry.entry.id.clone(), image.to_vec()))
+            })
+            .collect();
         HostSnapshot {
-            snapshot: self.store.lock().unwrap().snapshot(&self.builtin),
+            snapshot,
             browser_supported: cfg!(windows),
             config_path: self.config_path.display().to_string(),
+            favicons,
         }
     }
 
     fn entry(&self, id: &str) -> Result<(RegisteredEntry, ProxyPolicy)> {
-        let snapshot = self.snapshot().snapshot;
+        let snapshot = self.store.lock().unwrap().snapshot(&self.builtin);
         let entry = snapshot
             .entries
             .into_iter()
@@ -480,6 +518,62 @@ pub(super) fn update_state(
         session.state.clone()
     };
     let _ = app.emit_to(EventTarget::webview("main"), "web-session", state);
+}
+
+#[cfg(windows)]
+fn favicon_registration(app: &AppHandle, id: &str, label: &str) -> Option<String> {
+    app.state::<WebPages>()
+        .sessions
+        .lock()
+        .unwrap()
+        .get(id)
+        .filter(|session| session.label == label)?
+        .initial_url
+        .clone()
+}
+
+#[cfg(windows)]
+fn publish_favicon(app: &AppHandle, id: &str, label: &str, registered_url: &str, image: Vec<u8>) {
+    if !valid_favicon(&image) {
+        return;
+    }
+    let runtime = app.state::<WebPages>();
+    let valid = runtime
+        .sessions
+        .lock()
+        .unwrap()
+        .get(id)
+        .is_some_and(|session| {
+            session.label == label
+                && session.initial_url.as_deref() == Some(registered_url)
+                && oriel_core::same_web_origin(&session.state.url, registered_url)
+        });
+    if !valid
+        || !runtime
+            .entry(id)
+            .is_ok_and(|(entry, _)| entry.entry.url.as_deref() == Some(registered_url))
+    {
+        return;
+    }
+    // Keep the registered URL and PNG in one replaceable cache record.
+    let directory = runtime.data_root.join("favicons");
+    let pending = directory.join(format!("{}.tmp", unique_id()));
+    let mut cached = registered_url.as_bytes().to_vec();
+    cached.push(b'\n');
+    cached.extend_from_slice(&image);
+    let _ = std::fs::create_dir_all(&directory)
+        .and_then(|_| std::fs::write(&pending, cached))
+        .and_then(|_| std::fs::rename(&pending, directory.join(id)));
+    let _ = std::fs::remove_file(pending);
+    let _ = app.emit_to(
+        EventTarget::webview("main"),
+        "web-favicon",
+        WebFavicon {
+            entry_id: id.to_owned(),
+            registered_url: registered_url.to_owned(),
+            image,
+        },
+    );
 }
 
 #[tauri::command]

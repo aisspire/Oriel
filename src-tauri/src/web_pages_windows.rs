@@ -9,8 +9,9 @@ use std::{
 };
 use webview2_com::{
     take_pwstr, ClearBrowsingDataCompletedHandler, DocumentTitleChangedEventHandler,
-    HistoryChangedEventHandler, Microsoft::Web::WebView2::Win32::*,
-    NavigationCompletedEventHandler, NavigationStartingEventHandler, SourceChangedEventHandler,
+    FaviconChangedEventHandler, GetFaviconCompletedHandler, HistoryChangedEventHandler,
+    Microsoft::Web::WebView2::Win32::*, NavigationCompletedEventHandler,
+    NavigationStartingEventHandler, SourceChangedEventHandler,
 };
 use windows::{
     core::{Interface, BOOL, PWSTR},
@@ -102,10 +103,13 @@ pub async fn initialize(view: &Webview, app: AppHandle, id: String, label: Strin
     with_core(view, move |core| {
         configure(&core)?;
         let navigation = Arc::new(AtomicU64::new(0));
+        let favicon_generation = Arc::new(AtomicU64::new(0));
         unsafe {
             let (app, id, label, navigation) =
                 (app.clone(), id.clone(), label.clone(), navigation.clone());
+            let favicon_generation = favicon_generation.clone();
             let handler = NavigationStartingEventHandler::create(Box::new(move |sender, args| {
+                favicon_generation.fetch_add(1, Ordering::Relaxed);
                 if let (Some(core), Some(args)) = (sender, args) {
                     let mut nav_id = 0;
                     args.NavigationId(&mut nav_id)?;
@@ -115,6 +119,19 @@ pub async fn initialize(view: &Webview, app: AppHandle, id: String, label: Strin
                 Ok(())
             }));
             core.add_NavigationStarting(&handler, &mut 0)?;
+        }
+        // Older runtimes without this optional interface keep the monogram fallback.
+        if let Ok(favicon_core) = core.cast::<ICoreWebView2_15>() {
+            let (app, id, label) = (app.clone(), id.clone(), label.clone());
+            let handler = FaviconChangedEventHandler::create(Box::new(move |sender, _| {
+                if let Some(core) = sender {
+                    let _ = request_favicon(&core, &app, &id, &label, favicon_generation.clone());
+                }
+                Ok(())
+            }));
+            unsafe {
+                let _ = favicon_core.add_FaviconChanged(&handler, &mut 0);
+            }
         }
         unsafe {
             let (app, id, label) = (app.clone(), id.clone(), label.clone());
@@ -188,6 +205,68 @@ pub fn initialize_popup(window: &tauri::WebviewWindow) {
             eprintln!("Popup WebView2 initialization failed: {error}");
         }
     });
+}
+
+fn request_favicon(
+    core: &ICoreWebView2,
+    app: &AppHandle,
+    id: &str,
+    label: &str,
+    generation: Arc<AtomicU64>,
+) -> windows::core::Result<()> {
+    let request = generation.fetch_add(1, Ordering::Relaxed) + 1;
+    let Some(registered_url) = favicon_registration(app, id, label) else {
+        return Ok(());
+    };
+    // Compare the top-level document, allowing favicon files hosted on a CDN.
+    unsafe {
+        let mut source = PWSTR::null();
+        core.Source(&mut source)?;
+        if !oriel_core::same_web_origin(&take_pwstr(source), &registered_url) {
+            return Ok(());
+        }
+        let (app, id, label) = (app.clone(), id.to_owned(), label.to_owned());
+        let handler = GetFaviconCompletedHandler::create(Box::new(move |result, stream| {
+            if result.is_err() || generation.load(Ordering::Relaxed) != request {
+                return Ok(());
+            }
+            let Some(stream) = stream else {
+                return Ok(());
+            };
+            if stream
+                .Seek(0, windows::Win32::System::Com::STREAM_SEEK_SET, None)
+                .is_err()
+            {
+                return Ok(());
+            }
+            let mut image = Vec::new();
+            loop {
+                let mut chunk = [0u8; 4096];
+                let mut read = 0;
+                if stream
+                    .Read(
+                        chunk.as_mut_ptr().cast(),
+                        chunk.len() as u32,
+                        Some(&mut read),
+                    )
+                    .is_err()
+                {
+                    return Ok(());
+                }
+                if read == 0 {
+                    break;
+                }
+                if image.len() + read as usize > MAX_FAVICON_BYTES {
+                    return Ok(());
+                }
+                image.extend_from_slice(&chunk[..read as usize]);
+            }
+            publish_favicon(&app, &id, &label, &registered_url, image);
+            Ok(())
+        }));
+        core.cast::<ICoreWebView2_15>()?
+            .GetFavicon(COREWEBVIEW2_FAVICON_IMAGE_FORMAT_PNG, &handler)
+    }
 }
 
 pub async fn action(view: &Webview, action: String) -> Result<()> {

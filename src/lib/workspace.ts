@@ -20,6 +20,7 @@ export interface WorkspaceSnapshot {
   browserSupported: boolean
   configPath: string
   browserSidebar: BrowserSidebar
+  favicons: Record<string, number[]>
 }
 export interface BrowserSidebar { collapsed: boolean; width: number }
 export const defaultBrowserSidebar: BrowserSidebar = { collapsed: false, width: 240 }
@@ -57,6 +58,7 @@ export function loadWorkspace(): Promise<WorkspaceSnapshot> {
     defaultProxy: { mode: 'system' }, pluginDirectories: [], diagnostics: [],
     writable: false, browserSupported: false, configPath: '',
     browserSidebar: { ...defaultBrowserSidebar },
+    favicons: {},
   })
 }
 export function emptySession(entry: WebEntry): WebSessionState {

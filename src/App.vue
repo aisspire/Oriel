@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import AppIcon from './components/AppIcon.vue'
+import SiteIcon from './components/SiteIcon.vue'
 import OrielShowcase from './components/OrielShowcase.vue'
 import WindowChrome from './components/WindowChrome.vue'
 import WorkspaceDialog from './components/WorkspaceDialog.vue'
@@ -22,6 +23,8 @@ const openingDialog = ref(false)
 const error = ref('')
 const reloading = ref(false)
 const desktop = Boolean(getDesktopApi())
+let unlistenFavicon: (() => void) | undefined
+let mounted = false
 
 async function reload(initial = false) {
   if (reloading.value) return
@@ -56,7 +59,23 @@ function saved(snapshot: WorkspaceSnapshot) {
   if (selectedId.value !== 'home' && !current.value) selectedId.value = 'home'
 }
 function editEntry(entry: WebEntry, remove = false) { void openDialog('edit', entry, remove) }
-onMounted(() => { void reload(true) })
+onMounted(async () => {
+  mounted = true
+  await reload(true)
+  const api = getDesktopApi()
+  if (!api || !mounted) return
+  try {
+    const dispose = await api.event.listen<{ entryId: string; registeredUrl: string; image: number[] }>('web-favicon', event => {
+      const entry = workspace.value?.entries.find(entry => entry.id === event.payload.entryId)
+      if (workspace.value && entry?.url === event.payload.registeredUrl) {
+        workspace.value.favicons = { ...workspace.value.favicons, [entry.id]: event.payload.image }
+      }
+    })
+    if (mounted) unlistenFavicon = dispose
+    else dispose()
+  } catch { /* Icons can still use the cache or monogram. */ }
+})
+onUnmounted(() => { mounted = false; unlistenFavicon?.() })
 </script>
 
 <template>
@@ -75,7 +94,7 @@ onMounted(() => { void reload(true) })
           @click="selectedId = entry.id"
         >
           <AppIcon v-if="entry.kind === 'browser'" name="globe" />
-          <span v-else class="site-monogram" aria-hidden="true">{{ Array.from(entry.title)[0] }}</span>
+          <SiteIcon v-else class="site-monogram" :title="entry.title" :image="workspace?.favicons[entry.id]" />
         </button>
       </nav>
       <div class="sidebar-bottom">

@@ -13,6 +13,15 @@ use url::Url;
 
 pub type Result<T> = std::result::Result<T, String>;
 
+pub fn same_web_origin(left: &str, right: &str) -> bool {
+    match (Url::parse(left), Url::parse(right)) {
+        (Ok(left), Ok(right)) => {
+            matches!(left.scheme(), "http" | "https") && left.origin() == right.origin()
+        }
+        _ => false,
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(tag = "mode", rename_all = "kebab-case")]
 pub enum ProxyPolicy {
