@@ -34,6 +34,7 @@ fn main() {
             web_pages::workspace_reorder_entries,
             web_pages::workspace_browser_sidebar,
             web_pages::workspace_settings,
+            web_pages::plugin_documentation,
             web_pages::web_show,
             web_pages::web_prepare,
             web_pages::web_navigate,

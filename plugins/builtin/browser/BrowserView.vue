@@ -2,6 +2,7 @@
 import { computed, nextTick, onUnmounted, ref, watch, useTemplateRef } from 'vue'
 import AppIcon from '../../../src/components/AppIcon.vue'
 import WindowControls from '../../../src/components/WindowControls.vue'
+import PluginHelp from '../../../src/components/PluginHelp.vue'
 import { useWebSession } from '../../../src/composables/useWebSession'
 import { hideWebSurface, type PluginViewProps, type WebEntry } from '../../../src/lib/workspace'
 
@@ -9,12 +10,13 @@ const props = defineProps<PluginViewProps>()
 const emit = defineEmits<{ edit: [entry: WebEntry]; settings: []; add: [] }>()
 const passwords = ref<HTMLDialogElement>()
 const passwordDialog = ref(false)
+const helpOpen = ref(false)
 const clearing = ref(false)
 const cleared = ref(false)
 const address = ref(props.entry.url ?? '')
 const dirtyAddress = ref(false)
 const surface = useTemplateRef<HTMLElement>('surface')
-const { state, error, busy, preparing, run, retry } = useWebSession(() => props.entry, () => props.supported, () => props.suspended || passwordDialog.value, surface)
+const { state, error, busy, preparing, run, retry } = useWebSession(() => props.entry, () => props.supported, () => props.suspended || passwordDialog.value || helpOpen.value, surface)
 const available = computed(() => props.supported && !busy.value)
 
 watch(() => props.entry.id, () => { address.value = props.entry.url ?? ''; dirtyAddress.value = false; closePasswords() })
@@ -58,9 +60,10 @@ onUnmounted(() => passwords.value?.close())
       </form>
       <div class="toolbar-drag-spacer" data-tauri-drag-region></div>
       <div class="browser-options">
+        <PluginHelp :entry="entry" @active="helpOpen = $event" />
         <button class="plain-icon" type="button" aria-label="账号密码" title="账号密码" :disabled="!available" @click="openPasswords"><AppIcon name="key" /></button>
         <button v-if="entry.editable" class="plain-icon" type="button" aria-label="网页设置" title="网页设置" :disabled="!writable || busy" @click="emit('edit', entry)"><AppIcon name="settings" /></button>
-        <button v-else class="plain-icon" type="button" aria-label="浏览设置" title="浏览设置" :disabled="!writable || busy" @click="emit('settings')"><AppIcon name="settings" /></button>
+        <button v-else class="plain-icon" type="button" aria-label="工作台设置" title="工作台设置" :disabled="!writable || busy" @click="emit('settings')"><AppIcon name="settings" /></button>
       </div>
       <WindowControls class="browser-window-controls" />
     </header>

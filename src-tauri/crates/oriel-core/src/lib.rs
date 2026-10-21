@@ -1,4 +1,5 @@
 //! Platform-independent registration and local configuration for Oriel.
+mod plugins;
 pub mod services;
 pub mod window_state;
 
@@ -90,12 +91,22 @@ pub enum EntryKind {
     WebPage,
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum Presentation {
+    #[default]
+    Browser,
+    Application,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WebEntry {
     pub id: String,
     pub title: String,
     pub kind: EntryKind,
+    #[serde(default)]
+    pub presentation: Presentation,
     #[serde(default)]
     pub url: Option<String>,
     #[serde(default)]
@@ -116,6 +127,8 @@ pub struct PluginManifest {
     pub capabilities: Vec<String>,
     pub entries: Vec<WebEntry>,
     #[serde(default)]
+    pub documentation: Option<String>,
+    #[serde(default)]
     pub lifecycle: Option<services::Lifecycle>,
 }
 
@@ -125,6 +138,8 @@ pub struct Workspace {
     pub version: u32,
     #[serde(default)]
     pub plugin_directories: Vec<PathBuf>,
+    #[serde(default)]
+    pub plugin_roots: Vec<PathBuf>,
     #[serde(default)]
     pub web_entries: Vec<WebEntry>,
     #[serde(default = "system_proxy")]
@@ -158,6 +173,7 @@ impl Default for Workspace {
         Self {
             version: 2,
             plugin_directories: vec![],
+            plugin_roots: vec![],
             web_entries: vec![],
             default_proxy: system_proxy(),
             browser_sidebar: BrowserSidebar::default(),
@@ -172,6 +188,9 @@ pub struct RegisteredEntry {
     pub entry: WebEntry,
     pub editable: bool,
     pub plugin_name: String,
+    pub documentation: Option<String>,
+    #[serde(skip)]
+    pub directory: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -180,6 +199,8 @@ pub struct Snapshot {
     pub entries: Vec<RegisteredEntry>,
     pub default_proxy: ProxyPolicy,
     pub plugin_directories: Vec<PathBuf>,
+    pub plugin_roots: Vec<PathBuf>,
+    pub default_plugin_root: PathBuf,
     pub diagnostics: Vec<String>,
     pub writable: bool,
     pub browser_sidebar: BrowserSidebar,
@@ -256,6 +277,9 @@ pub fn normalize_url(input: &str) -> Result<String> {
 }
 
 fn validate_entry(entry: &mut WebEntry) -> Result<()> {
+    if entry.kind == EntryKind::Browser && entry.presentation != Presentation::Browser {
+        return Err("浏览器工作区不能使用工具应用布局。".into());
+    }
     if !valid_id(&entry.id) {
         return Err("入口 ID 无效。".into());
     }
@@ -297,6 +321,7 @@ fn validate_workspace(workspace: &mut Workspace) -> Result<()> {
     for entry in &mut workspace.web_entries {
         validate_entry(entry)?;
         if entry.kind != EntryKind::WebPage
+            || entry.presentation != Presentation::Browser
             || !entry.id.starts_with("user.")
             || !ids.insert(entry.id.clone())
         {
@@ -306,9 +331,10 @@ fn validate_workspace(workspace: &mut Workspace) -> Result<()> {
     if workspace
         .plugin_directories
         .iter()
+        .chain(&workspace.plugin_roots)
         .any(|p| !p.is_absolute())
     {
-        return Err("外部插件目录须使用当前设备的绝对路径。".into());
+        return Err("插件目录和读取目录须使用当前设备的绝对路径。".into());
     }
     Ok(())
 }
@@ -406,15 +432,23 @@ impl ConfigStore {
     }
 
     pub fn snapshot(&self, builtin: &str) -> Snapshot {
+        let default_plugin_root = self.path.parent().unwrap_or(Path::new(".")).join("plugins");
+        let mut roots = vec![default_plugin_root.clone()];
+        roots.extend(self.workspace.plugin_roots.clone());
+        let (directories, discovery_errors) =
+            plugins::discover(&self.workspace.plugin_directories, &roots);
         let mut snapshot = Snapshot {
             entries: vec![],
             default_proxy: self.workspace.default_proxy.clone(),
             plugin_directories: self.workspace.plugin_directories.clone(),
+            plugin_roots: self.workspace.plugin_roots.clone(),
+            default_plugin_root,
             diagnostics: self.load_error.iter().cloned().collect(),
             writable: self.load_error.is_none(),
             browser_sidebar: self.workspace.browser_sidebar.clone(),
             services: vec![],
         };
+        snapshot.diagnostics.extend(discovery_errors);
         let mut plugin_ids = HashSet::new();
         let mut entry_ids = HashSet::new();
         let mut register = |text: &str, builtin: bool, directory: Option<&Path>| -> Result<()> {
@@ -434,13 +468,21 @@ impl ConfigStore {
                 }
                 || plugin.schema_version == 1
                     && (plugin.lifecycle.is_some()
-                        || plugin
-                            .entries
-                            .iter()
-                            .any(|e| e.service.is_some() || !e.prerequisites.is_empty()))
+                        || plugin.documentation.is_some()
+                        || plugin.entries.iter().any(|e| {
+                            e.service.is_some()
+                                || !e.prerequisites.is_empty()
+                                || e.presentation != Presentation::Browser
+                        }))
                 || plugin_ids.contains(&plugin.id)
             {
                 return Err("插件身份、声明版本或能力无效／重复。".into());
+            }
+            if let Some(documentation) = &plugin.documentation {
+                plugins::read_documentation(
+                    directory.ok_or("内置声明不读取外部文档。")?,
+                    documentation,
+                )?;
             }
             let service = if let Some(lifecycle) = &plugin.lifecycle {
                 let directory = directory.ok_or("内置声明不启动外部脚本。")?;
@@ -477,13 +519,15 @@ impl ConfigStore {
                     entry,
                     editable: false,
                     plugin_name: plugin.name.clone(),
+                    documentation: plugin.documentation.clone(),
+                    directory: directory.map(Path::to_path_buf),
                 }));
             Ok(())
         };
         if let Err(error) = register(builtin, true, None) {
             snapshot.diagnostics.push(format!("内置浏览器：{error}"));
         }
-        for directory in &self.workspace.plugin_directories {
+        for directory in &directories {
             match read_json(&directory.join("plugin.json"))
                 .and_then(|text| register(&text, false, Some(directory)))
             {
@@ -504,9 +548,27 @@ impl ConfigStore {
                         entry,
                         editable: true,
                         plugin_name: "浏览器".into(),
+                        documentation: None,
+                        directory: None,
                     }),
             );
         snapshot
+    }
+
+    pub fn plugin_documentation(&self, builtin: &str, entry_id: &str) -> Result<String> {
+        let entry = self
+            .snapshot(builtin)
+            .entries
+            .into_iter()
+            .find(|entry| entry.entry.id == entry_id)
+            .ok_or("插件入口不存在，请重新加载接入。")?;
+        plugins::read_documentation(
+            entry.directory.as_deref().ok_or("此入口未提供插件说明。")?,
+            entry
+                .documentation
+                .as_deref()
+                .ok_or("此插件未提供说明文档。")?,
+        )
     }
 
     pub fn save_entry(
@@ -522,6 +584,7 @@ impl ConfigStore {
             id: id.clone(),
             title,
             kind: EntryKind::WebPage,
+            presentation: Presentation::Browser,
             url: Some(url),
             proxy,
             service: None,
@@ -583,6 +646,144 @@ impl ConfigStore {
 mod tests {
     use super::*;
     const BUILTIN: &str = include_str!("../../../../plugins/builtin/browser/plugin.json");
+
+    fn write_plugin(directory: &Path, id: &str) {
+        fs::create_dir_all(directory).unwrap();
+        fs::write(directory.join("plugin.json"), serde_json::json!({
+            "schemaVersion": 2, "id": id, "name": id, "version": "1",
+            "capabilities": ["web-page"], "documentation": "guide.md",
+            "entries": [{"id":"main","title":"Tool","kind":"web-page","presentation":"application","url":"http://127.0.0.1:8080"}]
+        }).to_string()).unwrap();
+        fs::write(directory.join("guide.md"), "# 使用说明\n\n配置和运行分开。").unwrap();
+    }
+
+    #[test]
+    fn discovers_applications_without_registration_or_script_execution() {
+        let dir = TestDir::new();
+        let plugin = dir.0.join("plugins/tool");
+        write_plugin(&plugin, "example.tool");
+        fs::write(
+            plugin.join("oriel.ps1"),
+            "throw 'must not execute during discovery'",
+        )
+        .unwrap();
+        // Files in grandchildren are not independently discovered.
+        write_plugin(&plugin.join("nested"), "example.nested");
+        let store = ConfigStore::open(dir.config());
+        let snapshot = store.snapshot(BUILTIN);
+        assert!(
+            snapshot.diagnostics.is_empty(),
+            "{:?}",
+            snapshot.diagnostics
+        );
+        assert_eq!(snapshot.entries.len(), 2);
+        assert_eq!(
+            snapshot.entries[1].entry.presentation,
+            Presentation::Application
+        );
+        assert_eq!(snapshot.default_plugin_root, dir.0.join("plugins"));
+        assert!(store
+            .plugin_documentation(BUILTIN, "example.tool.main")
+            .unwrap()
+            .contains("配置和运行分开"));
+        fs::remove_file(plugin.join("plugin.json")).unwrap();
+        let refreshed = store.snapshot(BUILTIN);
+        assert_eq!(refreshed.entries.len(), 1);
+        assert_eq!(refreshed.diagnostics.len(), 1);
+    }
+
+    #[test]
+    fn discovery_deduplicates_paths_and_reports_duplicate_ids_and_bad_manifests() {
+        let dir = TestDir::new();
+        let first = dir.0.join("plugins/first");
+        write_plugin(&first, "example.tool");
+        write_plugin(&dir.0.join("plugins/second"), "example.tool");
+        fs::create_dir_all(dir.0.join("plugins/broken")).unwrap();
+        let extra = dir.0.join("additional");
+        write_plugin(&extra.join("extra"), "example.extra");
+        let mut store = ConfigStore::open(dir.config());
+        let mut next = store.workspace.clone();
+        next.plugin_directories.push(first.clone());
+        next.plugin_roots = vec![extra.clone(), extra];
+        store.commit(next).unwrap();
+        let snapshot = store.snapshot(BUILTIN);
+        assert_eq!(snapshot.entries.len(), 3);
+        assert_eq!(snapshot.entries[1].directory.as_ref(), Some(&first));
+        assert_eq!(snapshot.diagnostics.len(), 2, "{:?}", snapshot.diagnostics);
+        assert_eq!(
+            ConfigStore::open(dir.config()).workspace.plugin_roots.len(),
+            2
+        );
+        let mut next = store.workspace.clone();
+        next.plugin_roots.push(dir.0.join("missing-root"));
+        store.commit(next).unwrap();
+        let snapshot = store.snapshot(BUILTIN);
+        assert_eq!(snapshot.entries.len(), 3);
+        assert!(snapshot
+            .diagnostics
+            .iter()
+            .any(|message| message.contains("missing-root")));
+    }
+
+    #[test]
+    fn documents_are_bounded_utf8_files_confined_to_the_plugin_directory() {
+        let dir = TestDir::new();
+        let plugin = dir.0.join("tool");
+        write_plugin(&plugin, "example.tool");
+        fs::write(dir.0.join("outside.md"), "outside").unwrap();
+        for relative in [
+            "../outside.md",
+            "/outside.md",
+            "C:/outside.md",
+            "..\\outside.md",
+            "guide.html",
+        ] {
+            assert!(
+                plugins::read_documentation(&plugin, relative).is_err(),
+                "{relative}"
+            );
+        }
+        fs::write(plugin.join("large.md"), vec![b'a'; 256 * 1024 + 1]).unwrap();
+        fs::write(plugin.join("invalid.md"), [0xff, 0xfe]).unwrap();
+        assert!(plugins::read_documentation(&plugin, "large.md").is_err());
+        assert!(plugins::read_documentation(&plugin, "invalid.md").is_err());
+        assert!(plugins::read_documentation(&plugin, "missing.md").is_err());
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(dir.0.join("outside.md"), plugin.join("link.md")).unwrap();
+            assert!(plugins::read_documentation(&plugin, "link.md").is_err());
+            std::os::unix::fs::symlink(&plugin, dir.0.join("linked-tool")).unwrap();
+            let (discovered, _) = plugins::discover(&[], std::slice::from_ref(&dir.0));
+            assert!(!discovered.contains(&dir.0.join("linked-tool")));
+        }
+    }
+
+    #[test]
+    fn rejects_unknown_presentations_and_keeps_legacy_browser_defaults() {
+        let dir = TestDir::new();
+        let mut store = ConfigStore::open(dir.config());
+        assert_eq!(
+            store.snapshot(BUILTIN).entries[0].entry.presentation,
+            Presentation::Browser
+        );
+        let mut next = store.workspace.clone();
+        next.plugin_roots.push(PathBuf::from("relative"));
+        assert!(store.commit(next).is_err());
+        let plugin = dir.0.join("plugins/tool");
+        write_plugin(&plugin, "example.tool");
+        let path = plugin.join("plugin.json");
+        let text = fs::read_to_string(&path).unwrap();
+        fs::write(&path, text.replace("application", "unknown")).unwrap();
+        assert_eq!(store.snapshot(BUILTIN).entries.len(), 1);
+        fs::write(
+            &path,
+            text.replace("\"schemaVersion\":2", "\"schemaVersion\":1"),
+        )
+        .unwrap();
+        assert_eq!(store.snapshot(BUILTIN).entries.len(), 1);
+        fs::write(&path, text).unwrap();
+        assert_eq!(store.snapshot(BUILTIN).entries.len(), 2);
+    }
 
     struct TestDir(PathBuf);
     impl TestDir {

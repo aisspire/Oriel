@@ -165,7 +165,15 @@ impl WebPages {
     }
 
     fn snapshot(&self) -> HostSnapshot {
-        let snapshot = self.store.lock().unwrap().snapshot(&self.builtin);
+        // An unavailable plugin directory must not prevent the home page or browser opening.
+        let directory = self.config_path.parent().unwrap().join("plugins");
+        let creation = std::fs::create_dir_all(directory);
+        let mut snapshot = self.store.lock().unwrap().snapshot(&self.builtin);
+        if let Err(error) = creation {
+            snapshot
+                .diagnostics
+                .push(format!("无法创建默认插件读取目录：{error}"));
+        }
         let favicons = snapshot
             .entries
             .iter()
@@ -698,6 +706,7 @@ pub async fn workspace_settings(
     runtime: tauri::State<'_, WebPages>,
     default_proxy: ProxyPolicy,
     plugin_directories: Vec<PathBuf>,
+    plugin_roots: Option<Vec<PathBuf>>,
 ) -> Result<HostSnapshot> {
     authorize(&caller, &request)?;
     let _operation = runtime.operation.lock().await;
@@ -706,12 +715,30 @@ pub async fn workspace_settings(
         let mut next = store.workspace.clone();
         next.default_proxy = default_proxy;
         next.plugin_directories = plugin_directories;
+        if let Some(roots) = plugin_roots {
+            next.plugin_roots = roots;
+        }
         store.commit(next)?;
     }
     let errors = runtime.reconcile(&app).await;
     let mut snapshot = runtime.snapshot();
     snapshot.snapshot.diagnostics.extend(errors);
     Ok(snapshot)
+}
+
+#[tauri::command]
+pub fn plugin_documentation(
+    caller: Webview,
+    request: tauri::ipc::Request<'_>,
+    runtime: tauri::State<'_, WebPages>,
+    entry_id: String,
+) -> Result<String> {
+    authorize(&caller, &request)?;
+    runtime
+        .store
+        .lock()
+        .unwrap()
+        .plugin_documentation(&runtime.builtin, &entry_id)
 }
 
 #[tauri::command]

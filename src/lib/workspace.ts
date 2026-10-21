@@ -6,15 +6,19 @@ export interface WebEntry {
   id: string
   title: string
   kind: 'browser' | 'web-page'
+  presentation: 'browser' | 'application'
   url: string | null
   proxy: ProxyPolicy
   editable: boolean
   pluginName: string
+  documentation: string | null
 }
 export interface WorkspaceSnapshot {
   entries: WebEntry[]
   defaultProxy: ProxyPolicy
   pluginDirectories: string[]
+  pluginRoots: string[]
+  defaultPluginRoot: string
   diagnostics: string[]
   writable: boolean
   browserSupported: boolean
@@ -54,8 +58,10 @@ export function loadWorkspace(): Promise<WorkspaceSnapshot> {
     entries: browserManifest.entries.map(entry => ({
       id: `${browserManifest.id}.${entry.id}`, title: entry.title, kind: 'browser',
       url: null, proxy: { mode: 'inherit' }, editable: false, pluginName: browserManifest.name,
+      presentation: 'browser', documentation: null,
     })),
     defaultProxy: { mode: 'system' }, pluginDirectories: [], diagnostics: [],
+    pluginRoots: [], defaultPluginRoot: '',
     writable: false, browserSupported: false, configPath: '',
     browserSidebar: { ...defaultBrowserSidebar },
     favicons: {},

@@ -11,6 +11,7 @@ const title = ref(props.entry?.title ?? '')
 const url = ref(props.entry?.url ?? '')
 const proxy = ref<ProxyPolicy>({ ...(props.mode === 'settings' ? props.workspace.defaultProxy : props.entry?.proxy ?? { mode: 'inherit' }) })
 const directories = ref(props.workspace.pluginDirectories.join('\n'))
+const roots = ref(props.workspace.pluginRoots.join('\n'))
 const busy = ref(false)
 const error = ref('')
 const confirmDelete = ref(props.confirmRemove ?? false)
@@ -23,6 +24,7 @@ async function save(remove = false) {
     if (remove && props.entry) result = await hostCommand('workspace_delete_entry', { id: props.entry.id })
     else if (props.mode === 'settings') result = await hostCommand('workspace_settings', {
       defaultProxy: proxy.value, pluginDirectories: directories.value.split(/\r?\n/).map(v => v.trim()).filter(Boolean),
+      pluginRoots: roots.value.split(/\r?\n/).map(v => v.trim()).filter(Boolean),
     })
     else result = await hostCommand('workspace_save_entry', { id: props.entry?.id ?? null, title: title.value, url: url.value, proxy: proxy.value })
     emit('saved', result); emit('close')
@@ -37,7 +39,7 @@ onUnmounted(() => dialog.value?.close())
   <dialog ref="dialog" class="settings-dialog" aria-labelledby="workspace-dialog-title" @cancel="busy ? $event.preventDefault() : emit('close')">
     <form @submit.prevent="save()">
       <header class="dialog-heading">
-        <h1 id="workspace-dialog-title">{{ mode === 'settings' ? '浏览设置' : mode === 'edit' ? '编辑网页' : '添加网页' }}</h1>
+        <h1 id="workspace-dialog-title">{{ mode === 'settings' ? '工作台设置' : mode === 'edit' ? '编辑网页' : '添加网页' }}</h1>
         <button class="plain-icon" type="button" aria-label="关闭" :disabled="busy" @click="emit('close')"><AppIcon name="close" /></button>
       </header>
       <fieldset :disabled="busy || !workspace.writable">
@@ -47,9 +49,12 @@ onUnmounted(() => dialog.value?.close())
         </template>
         <ProxyFields v-model="proxy" :allow-inherit="mode !== 'settings'" />
         <template v-if="mode === 'settings'">
-          <label class="field-label">外部插件目录<textarea v-model="directories" rows="3" spellcheck="false" placeholder="每行一个目录的绝对路径"></textarea>
-            <span class="field-help">目录内需有 plugin.json；保存后加载网页入口。</span>
+          <label class="field-label">默认插件读取目录<input :value="workspace.defaultPluginRoot" readonly spellcheck="false" />
+            <span class="field-help">将插件交付文件夹放入此目录，保存或重新加载接入后自动发现。</span>
           </label>
+          <label class="field-label">额外插件读取目录<textarea v-model="roots" rows="2" spellcheck="false" placeholder="每行一个绝对路径，扫描其直接子文件夹"></textarea></label>
+          <details><summary>单独登记插件目录</summary><label class="field-label">外部插件目录<textarea v-model="directories" rows="2" spellcheck="false" placeholder="每行一个包含 plugin.json 的绝对路径"></textarea></label></details>
+          <p class="field-help">仅放入可信插件；读取声明不会执行脚本，打开工具或依赖页面时才启动所需服务。</p>
           <p class="field-help">修改代理会重新打开受影响的网页，登录数据保留。</p>
         </template>
       </fieldset>

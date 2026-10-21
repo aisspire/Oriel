@@ -223,12 +223,14 @@ try {
   passed('collapse, keyboard resize and plugin switching preserve the native webpage instance')
 
   const resizeGrip = await shell.evaluate(`(() => { const bounds = document.querySelector('[role="separator"]').getBoundingClientRect(); return { x: bounds.x + bounds.width / 2, y: bounds.y + 80 } })()`)
+  await shell.evaluate(`window.resizeEvents=[];for(const type of ['pointerdown','pointermove','pointerup'])document.addEventListener(type,event=>window.resizeEvents.push({type,x:event.clientX,y:event.clientY,buttons:event.buttons}),true)`)
   await shell.command('Input.dispatchMouseEvent', { type: 'mouseMoved', ...resizeGrip })
   await shell.command('Input.dispatchMouseEvent', { type: 'mousePressed', button: 'left', buttons: 1, clickCount: 1, ...resizeGrip })
   await until(() => page.evaluate('document.visibilityState === "hidden"'), 'native webpage hidden before resizing across its bounds')
   await shell.command('Input.dispatchMouseEvent', { type: 'mouseMoved', buttons: 1, x: resizeGrip.x + 50, y: resizeGrip.y })
   await shell.command('Input.dispatchMouseEvent', { type: 'mouseReleased', button: 'left', buttons: 0, clickCount: 1, x: resizeGrip.x + 50, y: resizeGrip.y })
-  await until(async () => (await invoke('workspace_snapshot')).browserSidebar.width === 300, 'pointer sidebar resize persisted')
+  try { await until(async () => (await invoke('workspace_snapshot')).browserSidebar.width === 300, 'pointer sidebar resize persisted') }
+  catch (error) { throw new Error(error.message + ' ' + JSON.stringify({grip:resizeGrip,events:await shell.evaluate('window.resizeEvents')})) }
   assert.equal(await page.evaluate('window.layoutInstanceToken'), instanceToken)
   passed('pointer resizing across the native webpage preserves the page instance')
 
