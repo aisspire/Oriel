@@ -47,6 +47,22 @@ where
     receive(rx).await
 }
 
+fn apply_theme(core: &ICoreWebView2, app: &AppHandle) -> windows::core::Result<()> {
+    // Read effective theme on the owning UI thread, never a value captured before async creation.
+    let color = match native_theme(app) {
+        tauri::Theme::Dark => COREWEBVIEW2_PREFERRED_COLOR_SCHEME_DARK,
+        _ => COREWEBVIEW2_PREFERRED_COLOR_SCHEME_LIGHT,
+    };
+    unsafe {
+        core.cast::<ICoreWebView2_13>()?
+            .Profile()?
+            .SetPreferredColorScheme(color)
+    }
+}
+pub async fn theme(view: &Webview, app: AppHandle) -> Result<()> {
+    with_core(view, move |core| apply_theme(&core, &app)).await
+}
+
 fn configure(core: &ICoreWebView2) -> windows::core::Result<()> {
     // SAFETY: only called from with_webview, on the owning UI thread.
     unsafe {
@@ -102,6 +118,7 @@ fn publish(
 pub async fn initialize(view: &Webview, app: AppHandle, id: String, label: String) -> Result<()> {
     with_core(view, move |core| {
         configure(&core)?;
+        apply_theme(&core, &app)?;
         let navigation = Arc::new(AtomicU64::new(0));
         let favicon_generation = Arc::new(AtomicU64::new(0));
         unsafe {
@@ -198,9 +215,12 @@ pub async fn initialize(view: &Webview, app: AppHandle, id: String, label: Strin
 }
 
 pub fn initialize_popup(window: &tauri::WebviewWindow) {
+    let app = window.app_handle().clone();
     let _ = window.with_webview(move |platform| {
-        let result =
-            unsafe { platform.controller().CoreWebView2() }.and_then(|core| configure(&core));
+        let result = unsafe { platform.controller().CoreWebView2() }.and_then(|core| {
+            configure(&core)?;
+            apply_theme(&core, &app)
+        });
         if let Err(error) = result {
             eprintln!("Popup WebView2 initialization failed: {error}");
         }

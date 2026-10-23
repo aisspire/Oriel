@@ -25,6 +25,7 @@ export interface WorkspaceSnapshot {
   configPath: string
   browserSidebar: BrowserSidebar
   favicons: Record<string, number[]>
+  theme: 'light' | 'dark' | null
 }
 export interface BrowserSidebar { collapsed: boolean; width: number }
 export const defaultBrowserSidebar: BrowserSidebar = { collapsed: false, width: 240 }
@@ -64,7 +65,7 @@ export function loadWorkspace(): Promise<WorkspaceSnapshot> {
     pluginRoots: [], defaultPluginRoot: '',
     writable: false, browserSupported: false, configPath: '',
     browserSidebar: { ...defaultBrowserSidebar },
-    favicons: {},
+    favicons: {}, theme: null,
   })
 }
 export function emptySession(entry: WebEntry): WebSessionState {

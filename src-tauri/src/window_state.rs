@@ -59,7 +59,8 @@ pub fn create(app: &tauri::App) -> tauri::Result<()> {
             configuration.y = Some(f64::from(saved.y) / monitor.scale_factor());
         }
     }
-    let mut builder = tauri::WebviewWindowBuilder::from_config(app, &configuration)?;
+    let mut builder = tauri::WebviewWindowBuilder::from_config(app, &configuration)?
+        .theme(Some(super::web_pages::native_theme(app.handle())));
     if let Some(root) = super::web_pages::development_data_root() {
         builder = builder.data_directory(root.join("shell"));
     }

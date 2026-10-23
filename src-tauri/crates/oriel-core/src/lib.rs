@@ -99,6 +99,14 @@ pub enum Presentation {
     Application,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Theme {
+    #[default]
+    Light,
+    Dark,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WebEntry {
@@ -146,6 +154,8 @@ pub struct Workspace {
     pub default_proxy: ProxyPolicy,
     #[serde(default)]
     pub browser_sidebar: BrowserSidebar,
+    #[serde(default)]
+    pub theme: Option<Theme>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -171,12 +181,13 @@ fn system_proxy() -> ProxyPolicy {
 impl Default for Workspace {
     fn default() -> Self {
         Self {
-            version: 2,
+            version: 3,
             plugin_directories: vec![],
             plugin_roots: vec![],
             web_entries: vec![],
             default_proxy: system_proxy(),
             browser_sidebar: BrowserSidebar::default(),
+            theme: None,
         }
     }
 }
@@ -205,6 +216,7 @@ pub struct Snapshot {
     pub writable: bool,
     pub browser_sidebar: BrowserSidebar,
     pub services: Vec<services::ServiceDeclaration>,
+    pub theme: Option<Theme>,
 }
 
 pub fn valid_id(id: &str) -> bool {
@@ -310,7 +322,7 @@ fn validate_entry(entry: &mut WebEntry) -> Result<()> {
 }
 
 fn validate_workspace(workspace: &mut Workspace) -> Result<()> {
-    if workspace.version != 2 {
+    if workspace.version != 3 {
         return Err("不支持此配置版本，原文件已保留。".into());
     }
     if !(200..=360).contains(&workspace.browser_sidebar.width) {
@@ -376,8 +388,8 @@ impl ConfigStore {
                 })
                 .and_then(|mut value| {
                     // Upgrade in memory only. A failed read or write must preserve the old file.
-                    if value.version == 1 {
-                        value.version = 2;
+                    if [1, 2].contains(&value.version) {
+                        value.version = 3;
                     }
                     validate_workspace(&mut value)?;
                     Ok(value)
@@ -447,6 +459,7 @@ impl ConfigStore {
             writable: self.load_error.is_none(),
             browser_sidebar: self.workspace.browser_sidebar.clone(),
             services: vec![],
+            theme: self.workspace.theme,
         };
         snapshot.diagnostics.extend(discovery_errors);
         let mut plugin_ids = HashSet::new();
@@ -785,6 +798,40 @@ mod tests {
         assert_eq!(store.snapshot(BUILTIN).entries.len(), 2);
     }
 
+    #[test]
+    fn theme_migration_preserves_existing_webpage_prerequisites() {
+        for version in [1, 2, 3] {
+            let dir = TestDir::new();
+            let original = serde_json::json!({"version":version,"webEntries":[{"id":"user.stable","title":"页面","kind":"web-page","url":"https://example.com/","prerequisites":[{"pluginId":"tether","ruleId":"web"}]}]}).to_string();
+            fs::write(dir.config(), &original).unwrap();
+            let mut store = ConfigStore::open(dir.config());
+            assert!(store.snapshot(BUILTIN).writable);
+            assert_eq!(store.workspace.theme, None);
+            assert_eq!(fs::read_to_string(dir.config()).unwrap(), original);
+            let mut next = store.workspace.clone();
+            next.theme = Some(Theme::Dark);
+            store.commit(next).unwrap();
+            let restored = ConfigStore::open(dir.config());
+            assert_eq!(restored.workspace.version, 3);
+            assert_eq!(restored.snapshot(BUILTIN).theme, Some(Theme::Dark));
+            assert_eq!(restored.workspace.web_entries[0].id, "user.stable");
+            assert_eq!(
+                restored.workspace.web_entries[0].prerequisites[0].rule_id,
+                "web"
+            );
+        }
+    }
+    #[test]
+    fn invalid_theme_preserves_original_configuration() {
+        let dir = TestDir::new();
+        let original = r#"{"version":3,"theme":"unknown"}"#;
+        fs::write(dir.config(), original).unwrap();
+        let mut store = ConfigStore::open(dir.config());
+        assert!(!store.snapshot(BUILTIN).writable);
+        assert!(store.commit(Workspace::default()).is_err());
+        assert_eq!(fs::read_to_string(dir.config()).unwrap(), original);
+    }
+
     struct TestDir(PathBuf);
     impl TestDir {
         fn new() -> Self {
@@ -998,7 +1045,7 @@ mod tests {
         fs::write(dir.config(), legacy).unwrap();
         let mut store = ConfigStore::open(dir.config());
         assert!(store.snapshot(BUILTIN).writable);
-        assert_eq!(store.workspace.version, 2);
+        assert_eq!(store.workspace.version, 3);
         assert_eq!(store.workspace.browser_sidebar, BrowserSidebar::default());
         assert_eq!(fs::read_to_string(dir.config()).unwrap(), legacy);
         store
@@ -1012,7 +1059,7 @@ mod tests {
         assert_eq!(restored.workspace.web_entries[0].proxy, ProxyPolicy::Direct);
         assert!(restored.workspace.browser_sidebar.collapsed);
         assert_eq!(restored.workspace.browser_sidebar.width, 280);
-        assert_eq!(restored.workspace.version, 2);
+        assert_eq!(restored.workspace.version, 3);
     }
     #[test]
     fn reorder_preserves_entries_and_rejects_stale_or_duplicate_ids() {

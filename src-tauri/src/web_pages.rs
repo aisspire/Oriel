@@ -1,5 +1,7 @@
 //! Host-owned web-page capability. Plugins supply declarations, never native handles.
-use oriel_core::{unique_id, BrowserSidebar, ConfigStore, ProxyPolicy, RegisteredEntry, Snapshot};
+use oriel_core::{
+    unique_id, BrowserSidebar, ConfigStore, ProxyPolicy, RegisteredEntry, Snapshot, Theme,
+};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -115,6 +117,8 @@ pub struct WebPages {
     resume_urls: Mutex<HashMap<String, String>>,
     display: Mutex<Display>,
     operation: tauri::async_runtime::Mutex<()>,
+    theme: Mutex<Theme>,
+    theme_initialized: std::sync::atomic::AtomicBool,
     services: Arc<Mutex<oriel_core::services::Services>>,
     prepared: Mutex<HashMap<String, Option<String>>>,
     preparation_errors: Mutex<HashMap<String, String>>,
@@ -147,8 +151,12 @@ impl WebPages {
         let builtin = resource
             .and_then(|p| std::fs::read_to_string(p).ok())
             .unwrap_or_else(|| BUILTIN.to_owned());
+        let store = ConfigStore::open(config_path.clone());
+        let theme = store.workspace.theme.unwrap_or_default();
         Ok(Self {
-            store: Mutex::new(ConfigStore::open(config_path.clone())),
+            store: Mutex::new(store),
+            theme: Mutex::new(theme),
+            theme_initialized: std::sync::atomic::AtomicBool::new(false),
             config_path,
             data_root,
             builtin,
@@ -388,6 +396,7 @@ impl WebPages {
                     tauri::WebviewUrl::External("about:blank".parse().unwrap()),
                 )
                 .title("网页窗口")
+                .theme(Some(native_theme(&popup_app)))
                 .window_features(features)
                 .data_directory(popup_profile.clone())
                 .on_navigation(|url| {
@@ -621,9 +630,22 @@ pub async fn workspace_reload(
     authorize(&caller, &request)?;
     let _operation = runtime.operation.lock().await;
     *runtime.store.lock().unwrap() = ConfigStore::open(runtime.config_path.clone());
+    let loaded_theme = runtime.store.lock().unwrap().workspace.theme;
+    let mut theme_errors = vec![];
+    if let Some(theme) = loaded_theme {
+        *runtime.theme.lock().unwrap() = theme;
+        theme_errors = propagate_theme(&app).await;
+        let result = ThemeResult {
+            theme,
+            diagnostics: theme_errors.clone(),
+            persisted: true,
+        };
+        let _ = app.emit_to(EventTarget::webview("main"), "workspace-theme", &result);
+    }
     let errors = runtime.reconcile(&app).await;
     let mut snapshot = runtime.snapshot();
     snapshot.snapshot.diagnostics.extend(errors);
+    snapshot.snapshot.diagnostics.extend(theme_errors);
     Ok(snapshot)
 }
 
@@ -885,6 +907,89 @@ pub async fn web_prepare(
     };
     runtime.prepared.lock().unwrap().insert(entry_id, page);
     Ok(())
+}
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThemeResult {
+    theme: Theme,
+    diagnostics: Vec<String>,
+    persisted: bool,
+}
+pub fn native_theme(app: &AppHandle) -> tauri::Theme {
+    match *app.state::<WebPages>().theme.lock().unwrap() {
+        Theme::Light => tauri::Theme::Light,
+        Theme::Dark => tauri::Theme::Dark,
+    }
+}
+#[tauri::command]
+pub async fn workspace_theme(
+    caller: Webview,
+    request: tauri::ipc::Request<'_>,
+    app: AppHandle,
+    runtime: tauri::State<'_, WebPages>,
+    theme: Option<Theme>,
+    legacy: Option<Theme>,
+) -> Result<ThemeResult> {
+    authorize(&caller, &request)?;
+    let _operation = runtime.operation.lock().await;
+    let initialized = runtime
+        .theme_initialized
+        .swap(true, std::sync::atomic::Ordering::SeqCst);
+    let saved = runtime.store.lock().unwrap().workspace.theme;
+    let selected = theme.unwrap_or_else(|| {
+        if initialized {
+            *runtime.theme.lock().unwrap()
+        } else {
+            saved.or(legacy).unwrap_or_default()
+        }
+    });
+    *runtime.theme.lock().unwrap() = selected;
+    let mut diagnostics = vec![];
+    let persisted = {
+        let mut store = runtime.store.lock().unwrap();
+        let mut next = store.workspace.clone();
+        next.theme = Some(selected);
+        match store.commit(next) {
+            Ok(()) => true,
+            Err(e) => {
+                diagnostics.push(e);
+                false
+            }
+        }
+    };
+    diagnostics.extend(propagate_theme(&app).await);
+    let result = ThemeResult {
+        theme: selected,
+        diagnostics,
+        persisted,
+    };
+    let _ = app.emit_to(EventTarget::webview("main"), "workspace-theme", &result);
+    Ok(result)
+}
+async fn propagate_theme(app: &AppHandle) -> Vec<String> {
+    let mut diagnostics = vec![];
+    for (_, window) in app.windows() {
+        if let Err(e) = window.set_theme(Some(native_theme(app))) {
+            diagnostics.push(e.to_string());
+        }
+    }
+    for (_, view) in app.webviews() {
+        if let Err(e) = platform_theme(&view, app.clone()).await {
+            diagnostics.push(e);
+        }
+    }
+    diagnostics
+}
+async fn platform_theme(view: &Webview, app: AppHandle) -> Result<()> {
+    #[cfg(windows)]
+    {
+        platform::theme(view, app).await
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (view, app);
+        Ok(())
+    }
 }
 pub async fn shutdown(app: AppHandle) {
     let runtime = app.state::<WebPages>();

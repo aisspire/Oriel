@@ -28,6 +28,7 @@ fn main() {
     builder
         .invoke_handler(tauri::generate_handler![
             web_pages::workspace_snapshot,
+            web_pages::workspace_theme,
             web_pages::workspace_reload,
             web_pages::workspace_save_entry,
             web_pages::workspace_delete_entry,

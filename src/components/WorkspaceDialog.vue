@@ -4,8 +4,8 @@ import AppIcon from './AppIcon.vue'
 import ProxyFields from './ProxyFields.vue'
 import { errorText, hostCommand, type ProxyPolicy, type WebEntry, type WorkspaceSnapshot } from '../lib/workspace'
 
-const props = defineProps<{ mode: 'add' | 'edit' | 'settings'; entry?: WebEntry; confirmRemove?: boolean; workspace: WorkspaceSnapshot }>()
-const emit = defineEmits<{ close: []; saved: [workspace: WorkspaceSnapshot] }>()
+const props = defineProps<{ mode: 'add' | 'edit' | 'settings'; entry?: WebEntry; confirmRemove?: boolean; workspace: WorkspaceSnapshot; theme?: 'light' | 'dark' }>()
+const emit = defineEmits<{ close: []; saved: [workspace: WorkspaceSnapshot]; theme: [value: 'light' | 'dark'] }>()
 const dialog = ref<HTMLDialogElement>()
 const title = ref(props.entry?.title ?? '')
 const url = ref(props.entry?.url ?? '')
@@ -49,6 +49,7 @@ onUnmounted(() => dialog.value?.close())
         </template>
         <ProxyFields v-model="proxy" :allow-inherit="mode !== 'settings'" />
         <template v-if="mode === 'settings'">
+          <label class="field-label">工作台主题<select :value="theme ?? 'light'" @change="emit('theme', ($event.target as HTMLSelectElement).value as 'light' | 'dark')"><option value="light">浅色</option><option value="dark">深色</option></select></label>
           <label class="field-label">默认插件读取目录<input :value="workspace.defaultPluginRoot" readonly spellcheck="false" />
             <span class="field-help">将插件交付文件夹放入此目录，保存或重新加载接入后自动发现。</span>
           </label>

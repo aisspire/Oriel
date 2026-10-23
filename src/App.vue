@@ -10,7 +10,7 @@ import { getDesktopApi } from './lib/desktop'
 import { resolvePluginView } from './lib/pluginViews'
 import { errorText, hideWebSurface, hostCommand, loadWorkspace, type WebEntry, type WorkspaceSnapshot } from './lib/workspace'
 
-const { theme, iconSource, reducedMotion, paused, motionPaused, toggleTheme } = useAppearance()
+const { theme, iconSource, reducedMotion, paused, motionPaused, toggleTheme, setTheme, appearanceError } = useAppearance()
 const workspace = ref<WorkspaceSnapshot>()
 const selectedId = ref('home')
 const browserSelectedId = ref('')
@@ -101,13 +101,14 @@ onUnmounted(() => { mounted = false; unlistenFavicon?.() })
         <button v-if="workspace && desktop" class="icon-button" type="button" aria-label="重新加载接入" title="重新加载接入" :disabled="reloading" @click="reload()"><AppIcon name="refresh" /></button>
         <button v-if="workspace && desktop" class="icon-button" type="button" aria-label="工作台设置" title="工作台设置" @click="openDialog('settings')"><AppIcon name="settings" /></button>
         <button v-if="!reducedMotion && !current" class="icon-button" type="button" :aria-label="paused ? '播放首页动效' : '暂停首页动效'" :title="paused ? '播放首页动效' : '暂停首页动效'" :aria-pressed="paused" @click="paused = !paused"><AppIcon :name="paused ? 'play' : 'pause'" /></button>
-        <button class="icon-button" type="button" :aria-label="theme === 'light' ? '切换为深色外观' : '切换为浅色外观'" :title="theme === 'light' ? '切换为浅色外观' : '切换为浅色外观'" @click="toggleTheme"><AppIcon :name="theme === 'light' ? 'moon' : 'sun'" /></button>
+        <button class="icon-button" type="button" :aria-label="theme === 'light' ? '切换为深色外观' : '切换为浅色外观'" :title="theme === 'light' ? '切换为深色外观' : '切换为浅色外观'" @click="toggleTheme"><AppIcon :name="theme === 'light' ? 'moon' : 'sun'" /></button>
       </div>
     </aside>
     <main id="workspace" class="workspace" :class="{ 'has-web-entry': current }" tabindex="-1">
       <WindowChrome v-if="!current" />
-      <div v-if="error || workspace?.diagnostics.length" class="workspace-notice" role="alert">
+      <div v-if="error || appearanceError || workspace?.diagnostics.length" class="workspace-notice" role="alert">
         <p v-if="error">{{ error }}</p>
+        <p v-if="appearanceError">主题同步：{{ appearanceError }}</p>
         <p v-for="message in workspace?.diagnostics" :key="message">{{ message }}</p>
         <span v-if="workspace?.diagnostics.length && workspace.configPath" class="config-location">配置：{{ workspace.configPath }}</span>
         <button class="text-button" type="button" :disabled="reloading" @click="reload()">重新加载</button>
@@ -120,5 +121,5 @@ onUnmounted(() => { mounted = false; unlistenFavicon?.() })
       <OrielShowcase v-else :paused="motionPaused" />
     </main>
   </div>
-  <WorkspaceDialog v-if="modal && workspace" :mode="modal" :entry="dialogEntry" :confirm-remove="confirmRemove" :workspace="workspace" @close="modal = null" @saved="saved" />
+  <WorkspaceDialog v-if="modal && workspace" :mode="modal" :entry="dialogEntry" :confirm-remove="confirmRemove" :workspace="workspace" :theme="theme" @theme="setTheme" @close="modal = null" @saved="saved" />
 </template>
