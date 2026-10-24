@@ -295,12 +295,12 @@ flowchart TB
 
 ## 13. 开发约定与技能维护
 
-2026-10-21 用户确认建立以下分工：
+2026-10-21 建立分工，2026-10-24 用户确认精简为以下组织方式：
 
 - 根目录 [AGENTS.md](../../AGENTS.md) 保存长期实现约束、开发边界、Git 与环境规则及 skill 触发条件。
-- [oriel-design-maintenance](../../.agents/skills/oriel-design-maintenance/SKILL.md) 负责按需维护当前设计与讨论记录。
-- [oriel-plugin-development](../../.agents/skills/oriel-plugin-development/SKILL.md) 负责插件接入、适配与生命周期工作指导；尚未确定的规范先简述，不虚构协议或模板。
-- 产品设计与接口规范仍以 docs 为主要记录，不将整份设计复制到 skill；运行时必须满足的约束还应落实到实现校验。
-- 两个本地 skill 若与用户要求、已确认设计或实际情况冲突，或有值得长期沉淀的补充，应提出具体建议并询问是否更新 skill 本身，确认前不自行修改。用户已经明确授权的创建或更新无需重复询问。
+- [oriel-design-maintenance](../../.agents/skills/oriel-design-maintenance/SKILL.md) 负责基线、专题与决策记录的维护流程。
+- [oriel-plugin-development](../../.agents/skills/oriel-plugin-development/SKILL.md) 负责通用接入流程，按任务引导查阅网页接入、本地服务与网页前置程序规范。
+- 长期约束和 skill 维护规则统一由 AGENTS.md 承载，skill 引用规则并保留任务分流与工作步骤；产品设计、协议细节、兼容要求和阶段状态维护在正式文档中，运行时要求落实到实现校验。
+- 具体插件的业务规则维护在其自身仓库或模块的开发约定与文档中，不按插件数量逐一创建 skill。出现反复使用且明显独有的工作流程时，再考虑专属 skill；通用接入流程增长时优先评估按能力拆分。
 - 共享 UI skill 的链接保持不变；Oriel 专属要求记录在项目设计文档中。通用 UI 指导按用户明确要求更新，skill 维护询问不阻塞已授权工作。
 - 当前设计、精简决策记录、开发约定及两个本地 skill 纳入版本管理。原始会话、历史实现资料、原稿归档、当前参考图与本机共享链接由忽略规则排除；正式资料只链接仓库正式文件。

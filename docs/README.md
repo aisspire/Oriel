@@ -25,10 +25,10 @@
 ## 开发约定与本地技能
 
 - [AGENTS.md](../AGENTS.md)：项目长期约束、Git 与 WSL 规则、skill 触发条件及维护确认规则。
-- [设计维护 skill](../.agents/skills/oriel-design-maintenance/SKILL.md)：同步设计基线、愿景和决策记录。
-- [插件开发 skill](../.agents/skills/oriel-plugin-development/SKILL.md)：插件接入、独立工具适配、交付命令与生命周期指导；尚未确定的技术只保留范围说明。
+- [设计维护 skill](../.agents/skills/oriel-design-maintenance/SKILL.md)：按需同步基线、专题与决策记录，愿景和导航在受影响时更新。
+- [插件开发 skill](../.agents/skills/oriel-plugin-development/SKILL.md)：通用接入流程，按网页接入、本地服务、网页前置程序及交付与配置任务引导查阅规范。
 
-Oriel 专属的 UI 要求保存在项目设计文档中；共享 UI skill 的通用指导按用户明确要求维护。两个 Oriel 本地 skill 遇到要求冲突或值得复用的补充时，按开发约定处理。
+长期约束与 skill 维护规则统一见 AGENTS.md；协议细节和阶段状态见正式设计文档。具体插件的业务规则留在其自身仓库或模块，当前不逐插件创建 skill。Oriel 专属的 UI 要求保存在项目设计文档中，共享 UI skill 保持现状。
 
 ## 资料边界
 
