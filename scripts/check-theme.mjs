@@ -96,7 +96,7 @@ try {
   await until(() => popup.evaluate('!matchMedia("(prefers-color-scheme: dark)").matches'), 'popup theme follows')
   passed('popup receives the current theme before its first document and on changes')
   const persisted = JSON.parse(await readFile(path.join(data, 'workspace.json'), 'utf8'))
-  assert.equal(persisted.version, 3); assert.equal(persisted.theme, 'light')
+  assert.equal(persisted.version, 4); assert.equal(persisted.theme, 'light')
   assert.equal(await shell.evaluate('localStorage.getItem("oriel.appearance.theme")'), null)
   passed('successful v3 migration preserves local configuration as theme authority')
   await host('web_show', { entryId: null, bounds: { x: 0, y: 0, width: 1, height: 1 }, visible: false })

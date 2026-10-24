@@ -7,7 +7,7 @@ import { useWebSession } from '../composables/useWebSession'
 import { hideWebSurface, type PluginViewProps } from '../lib/workspace'
 
 const props = defineProps<PluginViewProps>()
-const emit = defineEmits<{ settings: [] }>()
+const emit = defineEmits<{ settings: []; preparations: [entryId?: string] }>()
 const menu = ref<HTMLDialogElement>()
 const menuOpen = ref(false)
 const helpOpen = ref(false)
@@ -34,7 +34,7 @@ onUnmounted(closeMenu)
       <button class="plain-icon" type="button" aria-label="应用操作" title="应用操作" aria-haspopup="dialog" @click="openMenu"><AppIcon name="more" /></button>
       <WindowControls />
     </header>
-    <div v-if="preparing" class="browser-error" role="status">正在准备前置资源，可打开提供方处理认证。</div>
+    <div v-if="preparing" class="browser-error" role="status">{{ entry.preparation ? '正在执行前置程序…' : '正在准备前置资源，可打开提供方处理认证。' }}</div>
     <div v-if="error || state.error" class="browser-error" role="alert"><span>{{ error || state.error }}</span><button class="text-button" type="button" :disabled="busy" @click="state.error ? run('web_action', { action: 'reload' }) : retry()">重试</button></div>
     <div class="load-progress" :class="{ 'is-loading': state.loading }" role="status" :aria-label="state.loading ? '工具加载中' : '加载完成'"></div>
     <div ref="surface" class="web-surface">
@@ -43,7 +43,8 @@ onUnmounted(closeMenu)
     <dialog ref="menu" class="settings-dialog application-menu" aria-labelledby="application-menu-title" @cancel.prevent="closeMenu" @close="menuOpen && closeMenu()">
       <header class="dialog-heading"><h1 id="application-menu-title">{{ entry.title }}</h1><button class="plain-icon" type="button" aria-label="关闭应用操作" @click="closeMenu"><AppIcon name="close" /></button></header>
       <button class="text-button" type="button" :disabled="!available || !state.url" @click="reloadPage">刷新界面</button>
-      <button class="text-button" type="button" :disabled="!available" @click="closeMenu(); retry()">重试加载</button>
+      <button class="text-button" type="button" :disabled="!available" @click="closeMenu(); retry()">{{ entry.preparation ? '重新准备并加载' : '重试加载' }}</button>
+      <button v-if="entry.preparation" class="text-button" type="button" @click="closeMenu(); emit('preparations', entry.id)">前置程序</button>
       <button class="text-button" type="button" @click="settings">工作台设置</button>
       <details><summary>诊断信息</summary><p class="field-help">入口：{{ entry.id }}</p><p class="field-help">{{ preparing ? '正在准备' : state.loading ? '正在加载' : error || state.error || '无加载错误' }}</p></details>
     </dialog>

@@ -1,5 +1,6 @@
 //! Platform-independent registration and local configuration for Oriel.
 mod plugins;
+pub mod preparation;
 pub mod services;
 pub mod window_state;
 
@@ -123,6 +124,8 @@ pub struct WebEntry {
     pub service: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub prerequisites: Vec<services::Prerequisite>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preparation: Option<preparation::Preparation>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -181,7 +184,7 @@ fn system_proxy() -> ProxyPolicy {
 impl Default for Workspace {
     fn default() -> Self {
         Self {
-            version: 3,
+            version: 4,
             plugin_directories: vec![],
             plugin_roots: vec![],
             web_entries: vec![],
@@ -305,6 +308,12 @@ fn validate_entry(entry: &mut WebEntry) -> Result<()> {
             return Err("前置资源须引用有效的插件及稳定规则 ID。".into());
         }
     }
+    if let Some(preparation) = &entry.preparation {
+        preparation.validate()?;
+        if entry.service.is_some() || !entry.prerequisites.is_empty() {
+            return Err("前置程序不能与旧服务或前置规则同时配置。".into());
+        }
+    }
     if entry.service.is_some() && entry.url.is_some() {
         return Err("服务页面地址应由后台返回，不能同时声明固定 URL。".into());
     }
@@ -312,9 +321,16 @@ fn validate_entry(entry: &mut WebEntry) -> Result<()> {
         return Err("页面服务提供方 ID 无效。".into());
     }
     if entry.kind == EntryKind::WebPage && entry.service.is_none() {
-        entry.url = Some(normalize_url(entry.url.as_deref().unwrap_or(""))?);
+        if entry.preparation.is_some() && entry.url.as_deref().is_none_or(|v| v.trim().is_empty()) {
+            entry.url = None;
+        } else {
+            entry.url = Some(normalize_url(entry.url.as_deref().unwrap_or(""))?);
+        }
     } else if entry.kind == EntryKind::Browser
-        && (entry.url.is_some() || entry.service.is_some() || !entry.prerequisites.is_empty())
+        && (entry.url.is_some()
+            || entry.service.is_some()
+            || !entry.prerequisites.is_empty()
+            || entry.preparation.is_some())
     {
         return Err("浏览器插件入口不能声明固定网址。".into());
     }
@@ -322,7 +338,7 @@ fn validate_entry(entry: &mut WebEntry) -> Result<()> {
 }
 
 fn validate_workspace(workspace: &mut Workspace) -> Result<()> {
-    if workspace.version != 3 {
+    if workspace.version != 4 {
         return Err("不支持此配置版本，原文件已保留。".into());
     }
     if !(200..=360).contains(&workspace.browser_sidebar.width) {
@@ -331,6 +347,9 @@ fn validate_workspace(workspace: &mut Workspace) -> Result<()> {
     workspace.default_proxy.validate(true)?;
     let mut ids = HashSet::new();
     for entry in &mut workspace.web_entries {
+        if let Some(preparation) = &entry.preparation {
+            preparation.validate_local()?;
+        }
         validate_entry(entry)?;
         if entry.kind != EntryKind::WebPage
             || entry.presentation != Presentation::Browser
@@ -388,8 +407,8 @@ impl ConfigStore {
                 })
                 .and_then(|mut value| {
                     // Upgrade in memory only. A failed read or write must preserve the old file.
-                    if [1, 2].contains(&value.version) {
-                        value.version = 3;
+                    if [1, 2, 3].contains(&value.version) {
+                        value.version = 4;
                     }
                     validate_workspace(&mut value)?;
                     Ok(value)
@@ -467,7 +486,7 @@ impl ConfigStore {
         let mut register = |text: &str, builtin: bool, directory: Option<&Path>| -> Result<()> {
             let mut plugin: PluginManifest =
                 serde_json::from_str(text).map_err(|_| "插件声明格式无效。")?;
-            if ![1, 2].contains(&plugin.schema_version)
+            if ![1, 2, 3].contains(&plugin.schema_version)
                 || !valid_id(&plugin.id)
                 || plugin.id == "user"
                 || plugin.id.starts_with("user.")
@@ -491,6 +510,9 @@ impl ConfigStore {
             {
                 return Err("插件身份、声明版本或能力无效／重复。".into());
             }
+            if plugin.schema_version < 3 && plugin.entries.iter().any(|e| e.preparation.is_some()) {
+                return Err("前置程序需要插件声明版本 3。".into());
+            }
             if let Some(documentation) = &plugin.documentation {
                 plugins::read_documentation(
                     directory.ok_or("内置声明不读取外部文档。")?,
@@ -510,6 +532,9 @@ impl ConfigStore {
             let mut pending_ids = HashSet::new();
             for entry in &mut plugin.entries {
                 validate_entry(entry)?;
+                if let Some(preparation) = &entry.preparation {
+                    preparation.resolve(directory)?;
+                }
                 if !builtin && entry.kind != EntryKind::WebPage {
                     return Err("外部声明目前仅支持 web-page 入口。".into());
                 }
@@ -591,6 +616,21 @@ impl ConfigStore {
         url: String,
         proxy: ProxyPolicy,
     ) -> Result<String> {
+        self.save_entry_prepared(id, title, url, proxy, None, false)
+    }
+
+    pub fn save_entry_prepared(
+        &mut self,
+        id: Option<String>,
+        title: String,
+        url: String,
+        proxy: ProxyPolicy,
+        preparation: Option<preparation::Preparation>,
+        replace_preparation: bool,
+    ) -> Result<String> {
+        if let Some(value) = &preparation {
+            value.validate_local()?;
+        }
         let mut next = self.workspace.clone();
         let id = id.unwrap_or_else(|| format!("user.{}", unique_id()));
         let mut entry = WebEntry {
@@ -602,8 +642,12 @@ impl ConfigStore {
             proxy,
             service: None,
             prerequisites: vec![],
+            preparation,
         };
         if let Some(old) = next.web_entries.iter_mut().find(|e| e.id == id) {
+            if !replace_preparation {
+                entry.preparation = old.preparation.clone();
+            }
             entry.service = old.service.clone();
             entry.prerequisites = old.prerequisites.clone();
             *old = entry;
@@ -800,7 +844,7 @@ mod tests {
 
     #[test]
     fn theme_migration_preserves_existing_webpage_prerequisites() {
-        for version in [1, 2, 3] {
+        for version in [1, 2, 3, 4] {
             let dir = TestDir::new();
             let original = serde_json::json!({"version":version,"webEntries":[{"id":"user.stable","title":"页面","kind":"web-page","url":"https://example.com/","prerequisites":[{"pluginId":"tether","ruleId":"web"}]}]}).to_string();
             fs::write(dir.config(), &original).unwrap();
@@ -812,7 +856,7 @@ mod tests {
             next.theme = Some(Theme::Dark);
             store.commit(next).unwrap();
             let restored = ConfigStore::open(dir.config());
-            assert_eq!(restored.workspace.version, 3);
+            assert_eq!(restored.workspace.version, 4);
             assert_eq!(restored.snapshot(BUILTIN).theme, Some(Theme::Dark));
             assert_eq!(restored.workspace.web_entries[0].id, "user.stable");
             assert_eq!(
@@ -1045,7 +1089,7 @@ mod tests {
         fs::write(dir.config(), legacy).unwrap();
         let mut store = ConfigStore::open(dir.config());
         assert!(store.snapshot(BUILTIN).writable);
-        assert_eq!(store.workspace.version, 3);
+        assert_eq!(store.workspace.version, 4);
         assert_eq!(store.workspace.browser_sidebar, BrowserSidebar::default());
         assert_eq!(fs::read_to_string(dir.config()).unwrap(), legacy);
         store
@@ -1059,7 +1103,7 @@ mod tests {
         assert_eq!(restored.workspace.web_entries[0].proxy, ProxyPolicy::Direct);
         assert!(restored.workspace.browser_sidebar.collapsed);
         assert_eq!(restored.workspace.browser_sidebar.width, 280);
-        assert_eq!(restored.workspace.version, 3);
+        assert_eq!(restored.workspace.version, 4);
     }
     #[test]
     fn reorder_preserves_entries_and_rejects_stale_or_duplicate_ids() {
@@ -1195,5 +1239,108 @@ mod tests {
             store.workspace.web_entries[0].prerequisites[0].rule_id,
             "ops-web"
         );
+    }
+    #[test]
+    fn preparation_config_round_trips_without_execution_and_preserves_identity() {
+        let dir = TestDir::new();
+        let mut store = ConfigStore::open(dir.config());
+        let program = dir.0.join("prepare.ps1");
+        let prep: preparation::Preparation =
+            serde_json::from_value(serde_json::json!({"path":program})).unwrap();
+        let id = store
+            .save_entry_prepared(
+                None,
+                "动态页面".into(),
+                "".into(),
+                ProxyPolicy::Direct,
+                Some(prep.clone()),
+                true,
+            )
+            .unwrap();
+        assert!(!program.exists()); // Saving never executes or requires an installed program.
+        let entry = &store.workspace.web_entries[0];
+        assert_eq!(entry.url, None);
+        assert_eq!(entry.preparation.as_ref(), Some(&prep));
+        store
+            .save_entry(
+                Some(id.clone()),
+                "改名".into(),
+                "".into(),
+                ProxyPolicy::Direct,
+            )
+            .unwrap();
+        let restored = ConfigStore::open(dir.config());
+        assert_eq!(restored.workspace.version, 4);
+        assert_eq!(restored.workspace.web_entries[0].id, id);
+        assert_eq!(
+            restored.workspace.web_entries[0].preparation.as_ref(),
+            Some(&prep)
+        );
+        let before = fs::read(dir.config()).unwrap();
+        assert!(store
+            .save_entry_prepared(
+                Some(id.clone()),
+                "无地址".into(),
+                "".into(),
+                ProxyPolicy::Direct,
+                None,
+                true
+            )
+            .is_err());
+        assert_eq!(fs::read(dir.config()).unwrap(), before);
+        store
+            .save_entry_prepared(
+                Some(id),
+                "静态页面".into(),
+                "https://example.com".into(),
+                ProxyPolicy::Direct,
+                None,
+                true,
+            )
+            .unwrap();
+        assert!(store.workspace.web_entries[0].preparation.is_none());
+    }
+    #[test]
+    fn new_programs_require_new_manifests_and_cannot_mix_with_legacy_rules() {
+        let dir = TestDir::new();
+        let plugin = dir.0.join("plugins/program");
+        fs::create_dir_all(&plugin).unwrap();
+        fs::write(
+            plugin.join("prepare.ps1"),
+            "throw 'must not execute during discovery'",
+        )
+        .unwrap();
+        let mut manifest = serde_json::json!({"schemaVersion":3,"id":"example.program","name":"程序","version":"1","capabilities":["web-page"],"entries":[{"id":"page","title":"动态页面","kind":"web-page","preparation":{"path":"prepare.ps1"}}]});
+        let write = |value: &serde_json::Value| {
+            fs::write(plugin.join("plugin.json"), value.to_string()).unwrap()
+        };
+        let store = ConfigStore::open(dir.config());
+        write(&manifest);
+        assert_eq!(store.snapshot(BUILTIN).entries.len(), 2);
+        manifest["schemaVersion"] = 2.into();
+        write(&manifest);
+        assert_eq!(store.snapshot(BUILTIN).entries.len(), 1);
+        manifest["schemaVersion"] = 3.into();
+        manifest["entries"][0]["prerequisites"] =
+            serde_json::json!([{"pluginId":"tether","ruleId":"web"}]);
+        write(&manifest);
+        assert_eq!(store.snapshot(BUILTIN).entries.len(), 1);
+        manifest["entries"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("prerequisites");
+        manifest["entries"][0]["preparation"]["path"] = "../outside.ps1".into();
+        write(&manifest);
+        assert_eq!(store.snapshot(BUILTIN).entries.len(), 1);
+    }
+    #[test]
+    fn invalid_new_preparation_config_preserves_the_original_file() {
+        let dir = TestDir::new();
+        let original = r#"{"version":4,"webEntries":[{"id":"user.bad","title":"bad","kind":"web-page","preparation":{"path":"relative.ps1"}}]}"#;
+        fs::write(dir.config(), original).unwrap();
+        let mut store = ConfigStore::open(dir.config());
+        assert!(!store.snapshot(BUILTIN).writable);
+        assert!(store.commit(Workspace::default()).is_err());
+        assert_eq!(fs::read_to_string(dir.config()).unwrap(), original);
     }
 }

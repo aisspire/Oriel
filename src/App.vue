@@ -5,6 +5,7 @@ import SiteIcon from './components/SiteIcon.vue'
 import OrielShowcase from './components/OrielShowcase.vue'
 import WindowChrome from './components/WindowChrome.vue'
 import WorkspaceDialog from './components/WorkspaceDialog.vue'
+import PreparationPanel from './components/PreparationPanel.vue'
 import { useAppearance } from './composables/useAppearance'
 import { getDesktopApi } from './lib/desktop'
 import { resolvePluginView } from './lib/pluginViews'
@@ -20,6 +21,13 @@ const modal = ref<'add' | 'edit' | 'settings' | null>(null)
 const dialogEntry = ref<WebEntry>()
 const confirmRemove = ref(false)
 const openingDialog = ref(false)
+const preparationPanel = ref(false)
+const preparationEntryId = ref<string>()
+async function openPreparations(entryId?: string) {
+  if (modal.value || preparationPanel.value || !desktop) return
+  preparationPanel.value = true; preparationEntryId.value = entryId
+  try { await hideWebSurface() } catch (cause) { error.value = errorText(cause); preparationPanel.value = false }
+}
 const error = ref('')
 const reloading = ref(false)
 const desktop = Boolean(getDesktopApi())
@@ -36,7 +44,7 @@ async function reload(initial = false) {
   finally { reloading.value = false }
 }
 async function openDialog(mode: 'add' | 'edit' | 'settings', entry?: WebEntry, remove = false) {
-  if (modal.value || openingDialog.value || !desktop) return
+  if (modal.value || preparationPanel.value || openingDialog.value || !desktop) return
   openingDialog.value = true
   try {
     await hideWebSurface()
@@ -98,6 +106,7 @@ onUnmounted(() => { mounted = false; unlistenFavicon?.() })
         </button>
       </nav>
       <div class="sidebar-bottom">
+        <button v-if="workspace && desktop" class="icon-button" type="button" aria-label="前置程序" title="前置程序" @click="openPreparations()"><AppIcon name="more" /></button>
         <button v-if="workspace && desktop" class="icon-button" type="button" aria-label="重新加载接入" title="重新加载接入" :disabled="reloading" @click="reload()"><AppIcon name="refresh" /></button>
         <button v-if="workspace && desktop" class="icon-button" type="button" aria-label="工作台设置" title="工作台设置" @click="openDialog('settings')"><AppIcon name="settings" /></button>
         <button v-if="!reducedMotion && !current" class="icon-button" type="button" :aria-label="paused ? '播放首页动效' : '暂停首页动效'" :title="paused ? '播放首页动效' : '暂停首页动效'" :aria-pressed="paused" @click="paused = !paused"><AppIcon :name="paused ? 'play' : 'pause'" /></button>
@@ -115,11 +124,12 @@ onUnmounted(() => { mounted = false; unlistenFavicon?.() })
       </div>
       <component
         :is="resolvePluginView(current)" v-if="current && workspace" :entry="current" :workspace="workspace" :selected-id="browserSelectedId" :supported="workspace.browserSupported"
-        :writable="workspace.writable" :suspended="modal !== null || openingDialog" @edit="editEntry" @settings="openDialog('settings')" @add="openDialog('add')"
+        :writable="workspace.writable" :suspended="modal !== null || openingDialog || preparationPanel" @preparations="openPreparations" @edit="editEntry" @settings="openDialog('settings')" @add="openDialog('add')"
         @select="browserSelectedId = $event" @updated="saved"
       />
       <OrielShowcase v-else :paused="motionPaused" />
     </main>
   </div>
+  <PreparationPanel v-if="preparationPanel && workspace" :workspace="workspace" :entry-id="preparationEntryId" @close="preparationPanel = false" />
   <WorkspaceDialog v-if="modal && workspace" :mode="modal" :entry="dialogEntry" :confirm-remove="confirmRemove" :workspace="workspace" :theme="theme" @theme="setTheme" @close="modal = null" @saved="saved" />
 </template>

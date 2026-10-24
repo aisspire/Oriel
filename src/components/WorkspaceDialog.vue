@@ -2,13 +2,15 @@
 import { onMounted, onUnmounted, ref } from 'vue'
 import AppIcon from './AppIcon.vue'
 import ProxyFields from './ProxyFields.vue'
-import { errorText, hostCommand, type ProxyPolicy, type WebEntry, type WorkspaceSnapshot } from '../lib/workspace'
+import PreparationFields from './PreparationFields.vue'
+import { errorText, hostCommand, type Preparation, type ProxyPolicy, type WebEntry, type WorkspaceSnapshot } from '../lib/workspace'
 
 const props = defineProps<{ mode: 'add' | 'edit' | 'settings'; entry?: WebEntry; confirmRemove?: boolean; workspace: WorkspaceSnapshot; theme?: 'light' | 'dark' }>()
 const emit = defineEmits<{ close: []; saved: [workspace: WorkspaceSnapshot]; theme: [value: 'light' | 'dark'] }>()
 const dialog = ref<HTMLDialogElement>()
 const title = ref(props.entry?.title ?? '')
 const url = ref(props.entry?.url ?? '')
+const preparation = ref<Preparation | null>(props.entry?.preparation ? JSON.parse(JSON.stringify(props.entry.preparation)) : null)
 const proxy = ref<ProxyPolicy>({ ...(props.mode === 'settings' ? props.workspace.defaultProxy : props.entry?.proxy ?? { mode: 'inherit' }) })
 const directories = ref(props.workspace.pluginDirectories.join('\n'))
 const roots = ref(props.workspace.pluginRoots.join('\n'))
@@ -26,7 +28,7 @@ async function save(remove = false) {
       defaultProxy: proxy.value, pluginDirectories: directories.value.split(/\r?\n/).map(v => v.trim()).filter(Boolean),
       pluginRoots: roots.value.split(/\r?\n/).map(v => v.trim()).filter(Boolean),
     })
-    else result = await hostCommand('workspace_save_entry', { id: props.entry?.id ?? null, title: title.value, url: url.value, proxy: proxy.value })
+    else result = await hostCommand('workspace_save_entry', { id: props.entry?.id ?? null, title: title.value, url: url.value, proxy: proxy.value, preparation: preparation.value, replacePreparation: true })
     emit('saved', result); emit('close')
   } catch (cause) { error.value = errorText(cause) }
   finally { busy.value = false }
@@ -45,8 +47,9 @@ onUnmounted(() => dialog.value?.close())
       <fieldset :disabled="busy || !workspace.writable">
         <template v-if="mode !== 'settings'">
           <label class="field-label">名称<input v-model="title" maxlength="80" required autofocus autocomplete="off" /></label>
-          <label class="field-label">网页地址<input v-model="url" type="text" required placeholder="https://example.com" spellcheck="false" autocomplete="off" /></label>
+          <label class="field-label">网页地址<input v-model="url" type="text" :required="!preparation" :placeholder="preparation ? '可留空，由前置程序返回' : 'https://example.com'" spellcheck="false" autocomplete="off" /></label>
         </template>
+        <PreparationFields v-if="mode !== 'settings'" v-model="preparation" />
         <ProxyFields v-model="proxy" :allow-inherit="mode !== 'settings'" />
         <template v-if="mode === 'settings'">
           <label class="field-label">工作台主题<select :value="theme ?? 'light'" @change="emit('theme', ($event.target as HTMLSelectElement).value as 'light' | 'dark')"><option value="light">浅色</option><option value="dark">深色</option></select></label>
@@ -62,7 +65,7 @@ onUnmounted(() => dialog.value?.close())
       <p v-if="!workspace.writable" class="form-error" role="alert">本地配置不可写，请处理配置错误后重新加载。</p>
       <p v-if="error" class="form-error" role="alert">{{ error }}</p>
       <div v-if="confirmDelete" class="delete-confirmation">
-        <p>移除此网页入口？已保存的密码和浏览数据将保留。</p>
+        <p>移除此网页入口并停止其托管的前置程序？已保存的密码和浏览数据将保留。</p>
         <button class="text-button" type="button" :disabled="busy" @click="confirmDelete = false">取消</button>
         <button class="text-button danger" type="button" :disabled="busy" @click="save(true)">确认移除</button>
       </div>

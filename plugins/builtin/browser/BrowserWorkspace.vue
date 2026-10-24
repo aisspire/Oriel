@@ -8,6 +8,7 @@ import BrowserView from './BrowserView.vue'
 
 const props = defineProps<PluginViewProps>()
 const emit = defineEmits<{
+  preparations: [entryId?: string]
   add: []; settings: []; edit: [entry: WebEntry, remove?: boolean]
   select: [id: string]; updated: [workspace: WorkspaceSnapshot]
 }>()
@@ -225,7 +226,7 @@ onUnmounted(() => {
     </aside>
     <div class="browser-page-area">
       <div v-if="error" class="browser-error" role="alert"><span>{{ error }}</span><button class="text-button" type="button" @click="error = ''">关闭</button></div>
-      <BrowserView v-if="current" :entry="current" :workspace="workspace" :selected-id="selectedId" :supported="supported" :writable="writable" :suspended="suspended || menuOpen || resizing" @edit="emit('edit', $event)" @settings="emit('settings')" />
+      <BrowserView v-if="current" :entry="current" :workspace="workspace" :selected-id="selectedId" :supported="supported" :writable="writable" :suspended="suspended || menuOpen || resizing" @edit="emit('edit', $event)" @settings="emit('settings')" @preparations="emit('preparations', $event)" />
       <template v-else>
         <header class="browser-toolbar browser-empty-toolbar"><div class="toolbar-drag-spacer" data-tauri-drag-region></div><WindowControls /></header>
         <div class="browser-empty fixed-browser-empty"><AppIcon name="globe" /><p>添加网页，放在手边。</p><button class="primary-button" type="button" :disabled="!writable" @click="emit('add')">添加网页</button></div>

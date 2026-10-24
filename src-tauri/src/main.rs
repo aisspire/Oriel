@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod preparation_platform;
 mod web_pages;
 #[cfg(target_os = "windows")]
 mod window_frame;
@@ -38,6 +39,10 @@ fn main() {
             web_pages::plugin_documentation,
             web_pages::web_show,
             web_pages::web_prepare,
+            web_pages::preparation_states,
+            web_pages::preparation_logs,
+            web_pages::preparation_stop,
+            web_pages::preparation_pick_file,
             web_pages::web_navigate,
             web_pages::web_action,
             web_pages::web_clear_passwords,

@@ -120,6 +120,10 @@ pub struct WebPages {
     theme: Mutex<Theme>,
     theme_initialized: std::sync::atomic::AtomicBool,
     services: Arc<Mutex<oriel_core::services::Services>>,
+    preparations: Arc<oriel_core::preparation::Preparations>,
+    prepared_specs: Mutex<HashMap<String, (oriel_core::preparation::Preparation, Option<String>)>>,
+    preparation_inputs:
+        Mutex<HashMap<String, (Option<oriel_core::preparation::Preparation>, Option<String>)>>,
     prepared: Mutex<HashMap<String, Option<String>>>,
     preparation_errors: Mutex<HashMap<String, String>>,
 }
@@ -167,6 +171,9 @@ impl WebPages {
             display: Mutex::default(),
             operation: tauri::async_runtime::Mutex::new(()),
             services: Arc::default(),
+            preparations: Arc::default(),
+            prepared_specs: Mutex::default(),
+            preparation_inputs: Mutex::default(),
             prepared: Mutex::default(),
             preparation_errors: Mutex::default(),
         })
@@ -280,6 +287,19 @@ impl WebPages {
     }
 
     async fn reconcile(&self, app: &AppHandle) -> Vec<String> {
+        let inputs = self.preparation_inputs.lock().unwrap().clone();
+        for (id, expected) in inputs {
+            let current = self
+                .entry(&id)
+                .ok()
+                .map(|(e, _)| (e.entry.preparation, e.entry.url));
+            if current.as_ref() != Some(&expected) {
+                self.preparation_inputs.lock().unwrap().remove(&id);
+                self.prepared.lock().unwrap().remove(&id);
+                self.prepared_specs.lock().unwrap().remove(&id);
+                self.preparation_errors.lock().unwrap().remove(&id);
+            }
+        }
         let sessions: Vec<_> = self
             .sessions
             .lock()
@@ -307,6 +327,9 @@ impl WebPages {
     }
 
     async fn ensure(&self, app: &AppHandle, id: &str) -> Result<Webview> {
+        if self.preparations.is_closing() {
+            return Err("Oriel 正在退出。".into());
+        }
         if !cfg!(windows) {
             return Err("内置浏览器目前支持 Windows 桌面；此预览不提供原生网页浏览。".into());
         }
@@ -335,7 +358,16 @@ impl WebPages {
                 .get_webview(&label)
                 .ok_or("网页实例已关闭，请重新加载接入。".into());
         }
-        let page_url = if entry.entry.service.is_some() || !entry.entry.prerequisites.is_empty() {
+        if let Some(spec) = &entry.entry.preparation {
+            let expected = (spec.clone(), entry.entry.url.clone());
+            if self.prepared_specs.lock().unwrap().get(id) != Some(&expected) {
+                return Err("前置程序尚未准备或配置已变更，请重新准备并加载。".into());
+            }
+        }
+        let page_url = if entry.entry.preparation.is_some()
+            || entry.entry.service.is_some()
+            || !entry.entry.prerequisites.is_empty()
+        {
             self.prepared
                 .lock()
                 .unwrap()
@@ -348,14 +380,14 @@ impl WebPages {
         let profile = self.data_root.join("web-profiles").join(id);
         std::fs::create_dir_all(&profile).map_err(|e| format!("无法创建网页数据目录：{e}"))?;
         let label = format!("web-{}", unique_id());
-        let url = self
-            .resume_urls
-            .lock()
-            .unwrap()
-            .remove(id)
-            .or(page_url)
-            .or_else(|| entry.entry.url.clone())
-            .unwrap_or_default();
+        let resume_url = self.resume_urls.lock().unwrap().remove(id);
+        let url = if entry.entry.preparation.is_some() {
+            page_url.or(resume_url)
+        } else {
+            resume_url.or(page_url)
+        }
+        .or_else(|| entry.entry.url.clone())
+        .unwrap_or_default();
         let state = WebSessionState {
             entry_id: id.to_owned(),
             title: entry.entry.title.clone(),
@@ -659,14 +691,19 @@ pub async fn workspace_save_entry(
     title: String,
     url: String,
     proxy: ProxyPolicy,
+    preparation: Option<oriel_core::preparation::Preparation>,
+    replace_preparation: Option<bool>,
 ) -> Result<HostSnapshot> {
     authorize(&caller, &request)?;
     let _operation = runtime.operation.lock().await;
-    runtime
-        .store
-        .lock()
-        .unwrap()
-        .save_entry(id, title, url, proxy)?;
+    runtime.store.lock().unwrap().save_entry_prepared(
+        id,
+        title,
+        url,
+        proxy,
+        preparation,
+        replace_preparation.unwrap_or(false),
+    )?;
     let errors = runtime.reconcile(&app).await;
     let mut snapshot = runtime.snapshot();
     snapshot.snapshot.diagnostics.extend(errors);
@@ -683,7 +720,29 @@ pub async fn workspace_delete_entry(
 ) -> Result<HostSnapshot> {
     authorize(&caller, &request)?;
     let _operation = runtime.operation.lock().await;
-    runtime.store.lock().unwrap().delete_entry(&id)?;
+    if !runtime
+        .store
+        .lock()
+        .unwrap()
+        .workspace
+        .web_entries
+        .iter()
+        .any(|e| e.id == id)
+    {
+        return Err("只能移除自定义网页。".into());
+    }
+    let preparations = runtime.preparations.clone();
+    let stopping_id = id.clone();
+    tauri::async_runtime::spawn_blocking(move || preparations.retire(&stopping_id))
+        .await
+        .map_err(|e| e.to_string())??;
+    if let Err(error) = runtime.store.lock().unwrap().delete_entry(&id) {
+        runtime.preparations.allow(&id);
+        return Err(error);
+    }
+    runtime.prepared.lock().unwrap().remove(&id);
+    runtime.prepared_specs.lock().unwrap().remove(&id);
+    runtime.preparation_errors.lock().unwrap().remove(&id);
     let errors = runtime.reconcile(&app).await;
     let mut snapshot = runtime.snapshot();
     snapshot.snapshot.diagnostics.extend(errors);
@@ -855,17 +914,148 @@ pub async fn web_clear_passwords(
     view.reload().map_err(|e| e.to_string())
 }
 
-// An explicit preflight runs outside the surface lock. Opening Tether to answer
-// authentication remains possible while a dependent page is waiting.
+// Waiting for preparation never holds the surface lock or blocks other plugins.
 #[tauri::command]
 pub async fn web_prepare(
     caller: Webview,
     request: tauri::ipc::Request<'_>,
+    app: AppHandle,
     runtime: tauri::State<'_, WebPages>,
     entry_id: String,
     retry: bool,
 ) -> Result<()> {
     authorize(&caller, &request)?;
+    if runtime.preparations.is_closing() {
+        return Err("Oriel 正在退出。".into());
+    }
+    let (entry, _) = runtime.entry(&entry_id)?;
+    if let Some(spec) = &entry.entry.preparation {
+        // Existing pages survive edits and stop; only explicit preparation replaces them.
+        if !retry && runtime.sessions.lock().unwrap().contains_key(&entry_id) {
+            return Ok(());
+        }
+        runtime.preparation_inputs.lock().unwrap().insert(
+            entry_id.clone(),
+            (entry.entry.preparation.clone(), entry.entry.url.clone()),
+        );
+        let resolved = match spec.resolve(entry.directory.as_deref()) {
+            Ok(resolved) => resolved,
+            Err(error) => {
+                runtime
+                    .preparation_errors
+                    .lock()
+                    .unwrap()
+                    .insert(entry_id, error.clone());
+                return Err(error);
+            }
+        };
+        let manager = runtime.preparations.clone();
+        let id = entry_id.clone();
+        let title = entry.entry.title.clone();
+        let result = tauri::async_runtime::spawn_blocking(move || {
+            manager.prepare(
+                &id,
+                &title,
+                resolved,
+                retry,
+                crate::preparation_platform::launch,
+            )
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+        let _operation = runtime.operation.lock().await;
+        let (current, _) = runtime.entry(&entry_id)?;
+        if current.entry.preparation != entry.entry.preparation
+            || current.entry.url != entry.entry.url
+            || current.directory != entry.directory
+        {
+            return Err("准备期间配置已变更，请重新准备并加载。".into());
+        }
+        if let Ok(result) = &result {
+            if runtime
+                .preparations
+                .views()
+                .iter()
+                .find(|v| v.entry_id == entry_id)
+                .is_none_or(|v| v.generation != result.generation)
+            {
+                return Err("本次准备结果已被新运行替代。".into());
+            }
+        }
+        let generation = result.as_ref().ok().map(|r| r.generation);
+        let outcome = result.and_then(|result| {
+            let view = runtime
+                .preparations
+                .views()
+                .into_iter()
+                .find(|v| v.entry_id == entry_id);
+            if !view.is_some_and(|v| {
+                matches!(
+                    v.state,
+                    oriel_core::preparation::State::Ready
+                        | oriel_core::preparation::State::Completed
+                )
+            }) {
+                return Err("前置程序已停止或失败，请重新准备。".into());
+            }
+            oriel_core::normalize_url(
+                result
+                    .url
+                    .as_deref()
+                    .or(entry.entry.url.as_deref())
+                    .ok_or("程序未返回地址，网页也未配置固定地址。")?,
+            )
+        });
+        let url = match outcome {
+            Ok(url) => url,
+            Err(error) => {
+                if let Some(generation) = generation {
+                    runtime
+                        .preparations
+                        .reject_result(&entry_id, generation, &error);
+                }
+                runtime.prepared.lock().unwrap().remove(&entry_id);
+                runtime.prepared_specs.lock().unwrap().remove(&entry_id);
+                runtime
+                    .preparation_errors
+                    .lock()
+                    .unwrap()
+                    .insert(entry_id, error.clone());
+                return Err(error);
+            }
+        };
+        runtime.preparation_errors.lock().unwrap().remove(&entry_id);
+        runtime.resume_urls.lock().unwrap().remove(&entry_id);
+        runtime
+            .prepared
+            .lock()
+            .unwrap()
+            .insert(entry_id.clone(), Some(url.clone()));
+        runtime
+            .prepared_specs
+            .lock()
+            .unwrap()
+            .insert(entry_id.clone(), (spec.clone(), entry.entry.url.clone()));
+        let session = runtime.sessions.lock().unwrap().get(&entry_id).cloned();
+        if retry {
+            if let Some(session) = session {
+                let view = app.get_webview(&session.label).ok_or("网页实例已关闭。")?;
+                if session.state.url == url {
+                    view.reload().map_err(|e| e.to_string())?;
+                } else {
+                    view.navigate(url.parse().map_err(|_| "网页地址无效。")?)
+                        .map_err(|e| e.to_string())?;
+                }
+                if let Some(session) = runtime.sessions.lock().unwrap().get_mut(&entry_id) {
+                    session.state.url = url;
+                    session.state.error = None;
+                }
+            }
+        }
+        let _ = app.emit_to(EventTarget::webview("main"), "web-prepared", &entry_id);
+        return Ok(());
+    }
+    // Legacy service semantics remain compatible, including existing-page reuse.
     if runtime.sessions.lock().unwrap().contains_key(&entry_id) {
         return Ok(());
     }
@@ -881,7 +1071,6 @@ pub async fn web_prepare(
     {
         return Err(error);
     }
-    let (entry, _) = runtime.entry(&entry_id)?;
     let declarations = runtime
         .store
         .lock()
@@ -907,6 +1096,125 @@ pub async fn web_prepare(
     };
     runtime.prepared.lock().unwrap().insert(entry_id, page);
     Ok(())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreparationStatus {
+    #[serde(flatten)]
+    run: oriel_core::preparation::RunView,
+    configuration_changed: bool,
+}
+#[tauri::command]
+pub fn preparation_states(
+    caller: Webview,
+    request: tauri::ipc::Request<'_>,
+    runtime: tauri::State<'_, WebPages>,
+) -> Result<Vec<PreparationStatus>> {
+    authorize(&caller, &request)?;
+    let errors = runtime.preparation_errors.lock().unwrap().clone();
+    let mut runs = runtime.preparations.views();
+    for (id, error) in &errors {
+        if !runs.iter().any(|r| &r.entry_id == id) {
+            if let Ok((entry, _)) = runtime.entry(id) {
+                if entry.entry.preparation.is_some() {
+                    runs.push(oriel_core::preparation::RunView {
+                        entry_id: id.clone(),
+                        title: entry.entry.title,
+                        generation: 0,
+                        state: oriel_core::preparation::State::Failed,
+                        url: None,
+                        error: Some(error.clone()),
+                        exit_code: None,
+                        cleaned: true,
+                        logs: Default::default(),
+                    });
+                }
+            }
+        }
+    }
+    Ok(runs
+        .into_iter()
+        .map(|mut run| {
+            let configuration_changed = run.generation != 0
+                && runtime
+                    .entry(&run.entry_id)
+                    .ok()
+                    .and_then(|(entry, _)| {
+                        entry
+                            .entry
+                            .preparation
+                            .as_ref()
+                            .and_then(|p| p.resolve(entry.directory.as_deref()).ok())
+                    })
+                    .is_none_or(|p| !runtime.preparations.matches(&run.entry_id, &p));
+            if let Some(error) = errors.get(&run.entry_id) {
+                run.error = Some(error.clone());
+            }
+            run.logs.clear();
+            PreparationStatus {
+                run,
+                configuration_changed,
+            }
+        })
+        .collect())
+}
+#[tauri::command]
+pub fn preparation_logs(
+    caller: Webview,
+    request: tauri::ipc::Request<'_>,
+    runtime: tauri::State<'_, WebPages>,
+    entry_id: String,
+) -> Result<Vec<String>> {
+    authorize(&caller, &request)?;
+    Ok(runtime
+        .preparations
+        .views()
+        .into_iter()
+        .find(|v| v.entry_id == entry_id)
+        .map(|v| v.logs.into_iter().collect())
+        .unwrap_or_default())
+}
+#[tauri::command]
+pub async fn preparation_stop(
+    caller: Webview,
+    request: tauri::ipc::Request<'_>,
+    runtime: tauri::State<'_, WebPages>,
+    entry_id: String,
+) -> Result<()> {
+    authorize(&caller, &request)?;
+    let manager = runtime.preparations.clone();
+    let id = entry_id.clone();
+    tauri::async_runtime::spawn_blocking(move || manager.stop(&id))
+        .await
+        .map_err(|e| e.to_string())??;
+    let _operation = runtime.operation.lock().await;
+    runtime.prepared.lock().unwrap().remove(&entry_id);
+    runtime.prepared_specs.lock().unwrap().remove(&entry_id);
+    Ok(())
+}
+#[tauri::command]
+pub async fn preparation_pick_file(
+    caller: Webview,
+    app: AppHandle,
+    request: tauri::ipc::Request<'_>,
+) -> Result<Option<String>> {
+    authorize(&caller, &request)?;
+    #[cfg(windows)]
+    let owner = app
+        .get_window("main")
+        .ok_or("主窗口不可用。")?
+        .hwnd()
+        .map_err(|e| e.to_string())?
+        .0 as usize;
+    #[cfg(not(windows))]
+    let owner = {
+        let _ = app;
+        0
+    };
+    tauri::async_runtime::spawn_blocking(move || crate::preparation_platform::pick_file(owner))
+        .await
+        .map_err(|e| e.to_string())?
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -993,6 +1301,7 @@ async fn platform_theme(view: &Webview, app: AppHandle) -> Result<()> {
 }
 pub async fn shutdown(app: AppHandle) {
     let runtime = app.state::<WebPages>();
+    runtime.preparations.begin_shutdown();
     // End dependent native views before requesting provider cleanup.
     let labels = runtime
         .sessions
@@ -1004,6 +1313,13 @@ pub async fn shutdown(app: AppHandle) {
     for label in labels {
         if let Some(view) = app.get_webview(&label) {
             let _ = view.close();
+        }
+    }
+    let preparations = runtime.preparations.clone();
+    if let Ok(errors) = tauri::async_runtime::spawn_blocking(move || preparations.shutdown()).await
+    {
+        for error in errors {
+            eprintln!("前置程序退出清理：{error}");
         }
     }
     let services = runtime.services.clone();

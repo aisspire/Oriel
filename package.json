@@ -15,6 +15,7 @@
     "icons": "node scripts/generate-icons.mjs",
     "check:browser": "node scripts/check-browser.mjs",
     "check:theme": "node scripts/check-theme.mjs",
+    "check:preparation": "node scripts/check-preparation.mjs",
     "tauri": "tauri"
   },
   "dependencies": {

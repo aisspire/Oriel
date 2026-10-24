@@ -199,7 +199,7 @@ try {
   const page = await connectProfile(join(data, 'web-profiles', entry.id), target => target.url.startsWith(fixtureUrl))
   connections.push(page)
   await until(() => page.evaluate('document.title === "Fixture /start"'), 'initial webpage load')
-  assert.equal(JSON.parse(await readFile(join(data, 'workspace.json'), 'utf8')).version, 3)
+  assert.equal(JSON.parse(await readFile(join(data, 'workspace.json'), 'utf8')).version, 4)
   assert.equal(await shell.evaluate(`document.querySelectorAll('.primary-nav .site-monogram').length`), 0)
   assert.equal(await shell.evaluate(`document.querySelectorAll('.fixed-page').length`), 1)
   passed('webpage creation through UI and native rendering')

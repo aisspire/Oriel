@@ -7,7 +7,7 @@ import { useWebSession } from '../../../src/composables/useWebSession'
 import { hideWebSurface, type PluginViewProps, type WebEntry } from '../../../src/lib/workspace'
 
 const props = defineProps<PluginViewProps>()
-const emit = defineEmits<{ edit: [entry: WebEntry]; settings: []; add: [] }>()
+const emit = defineEmits<{ edit: [entry: WebEntry]; settings: []; add: []; preparations: [entryId?: string] }>()
 const passwords = ref<HTMLDialogElement>()
 const passwordDialog = ref(false)
 const helpOpen = ref(false)
@@ -60,6 +60,7 @@ onUnmounted(() => passwords.value?.close())
       </form>
       <div class="toolbar-drag-spacer" data-tauri-drag-region></div>
       <div class="browser-options">
+        <button v-if="entry.preparation" class="plain-icon" type="button" aria-label="前置程序" title="前置程序" @click="emit('preparations', entry.id)"><AppIcon name="more" /></button>
         <PluginHelp :entry="entry" @active="helpOpen = $event" />
         <button class="plain-icon" type="button" aria-label="账号密码" title="账号密码" :disabled="!available" @click="openPasswords"><AppIcon name="key" /></button>
         <button v-if="entry.editable" class="plain-icon" type="button" aria-label="网页设置" title="网页设置" :disabled="!writable || busy" @click="emit('edit', entry)"><AppIcon name="settings" /></button>
@@ -67,10 +68,11 @@ onUnmounted(() => passwords.value?.close())
       </div>
       <WindowControls class="browser-window-controls" />
     </header>
-    <div v-if="preparing" class="browser-error" role="status"><span>正在准备前置资源，可打开提供方页面处理认证。</span></div>
+    <div v-if="preparing" class="browser-error" role="status"><span>{{ entry.preparation ? '正在执行前置程序…' : '正在准备前置资源，可打开提供方页面处理认证。' }}</span></div>
     <div v-if="error || state.error" class="browser-error" role="alert">
       <span>{{ error || state.error }}</span><button class="text-button" type="button" :disabled="busy" @click="state.error ? run('web_action', { action: 'reload' }) : retry()">重试</button>
     </div>
+    <button v-if="entry.preparation && (error || state.error)" class="text-button" type="button" :disabled="preparing" @click="retry">重新准备并加载</button>
     <div class="load-progress" :class="{ 'is-loading': state.loading }" role="status" :aria-label="state.loading ? '网页加载中' : '加载完成'"></div>
     <div ref="surface" class="web-surface">
       <div v-if="!supported" class="browser-empty"><AppIcon name="globe" /><p>请在 Windows 桌面应用中浏览网页。</p></div>

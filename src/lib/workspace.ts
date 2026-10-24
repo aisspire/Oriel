@@ -2,6 +2,20 @@ import browserManifest from '../../plugins/builtin/browser/plugin.json'
 import { getDesktopApi } from './desktop'
 
 export type ProxyPolicy = { mode: 'inherit' | 'system' | 'direct' } | { mode: 'custom'; address: string }
+export interface Preparation {
+  path: string
+  runner: 'auto' | 'direct' | 'cmd' | 'powershell' | 'custom'
+  args: string[]
+  cwd?: string | null
+  mode: 'once' | 'persistent'
+  timeoutSeconds: number
+  interpreter?: { program: string; args: string[] } | null
+}
+export interface PreparationState {
+  entryId: string; title: string; generation: number
+  state: 'starting' | 'ready' | 'completed' | 'failed' | 'stopping' | 'stopped'
+  url: string | null; error: string | null; exitCode: number | null; cleaned: boolean; configurationChanged: boolean
+}
 export interface WebEntry {
   id: string
   title: string
@@ -9,6 +23,7 @@ export interface WebEntry {
   presentation: 'browser' | 'application'
   url: string | null
   proxy: ProxyPolicy
+  preparation?: Preparation | null
   editable: boolean
   pluginName: string
   documentation: string | null
