@@ -1,6 +1,6 @@
 <script setup lang="ts">
 defineProps<{
-  name: 'home' | 'sun' | 'moon' | 'pause' | 'play' | 'minimize' | 'maximize' | 'restore' | 'close' | 'globe' | 'back' | 'forward' | 'refresh' | 'key' | 'settings' | 'plus' | 'panel' | 'more'
+  name: 'home' | 'sun' | 'moon' | 'pause' | 'play' | 'minimize' | 'maximize' | 'restore' | 'close' | 'globe' | 'back' | 'forward' | 'refresh' | 'key' | 'settings' | 'plus' | 'panel' | 'more' | 'folder' | 'clock'
 }>()
 </script>
 
@@ -51,6 +51,8 @@ defineProps<{
       <path d="M9 7V4h11v11h-3" />
       <rect x="4" y="9" width="11" height="11" rx=".5" />
     </template>
+    <path v-else-if="name === 'folder'" d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z" />
+    <template v-else-if="name === 'clock'"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 3" /></template>
     <path v-else-if="name === 'close'" d="m6 6 12 12M18 6 6 18" />
   </svg>
 </template>
