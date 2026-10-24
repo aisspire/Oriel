@@ -358,16 +358,22 @@ impl WebPages {
                 .get_webview(&label)
                 .ok_or("网页实例已关闭，请重新加载接入。".into());
         }
-        if let Some(spec) = &entry.entry.preparation {
+        let page_url = if let Some(spec) = &entry.entry.preparation {
             let expected = (spec.clone(), entry.entry.url.clone());
-            if self.prepared_specs.lock().unwrap().get(id) != Some(&expected) {
-                return Err("前置程序尚未准备或配置已变更，请重新准备并加载。".into());
-            }
-        }
-        let page_url = if entry.entry.preparation.is_some()
-            || entry.entry.service.is_some()
-            || !entry.entry.prerequisites.is_empty()
-        {
+            let current = self.prepared_specs.lock().unwrap().get(id) == Some(&expected);
+            let prepared_url = if current {
+                self.prepared.lock().unwrap().get(id).cloned().flatten()
+            } else {
+                None
+            };
+            // Registered pages remain usable after failure or a configuration edit.
+            // Merely showing a page never executes or retries its program.
+            Some(
+                prepared_url
+                    .or_else(|| entry.entry.url.clone())
+                    .ok_or("没有登记地址，请先准备程序取得网页地址。")?,
+            )
+        } else if entry.entry.service.is_some() || !entry.entry.prerequisites.is_empty() {
             self.prepared
                 .lock()
                 .unwrap()
@@ -938,32 +944,31 @@ pub async fn web_prepare(
             entry_id.clone(),
             (entry.entry.preparation.clone(), entry.entry.url.clone()),
         );
-        let resolved = match spec.resolve(entry.directory.as_deref()) {
-            Ok(resolved) => resolved,
-            Err(error) => {
-                runtime
-                    .preparation_errors
-                    .lock()
-                    .unwrap()
-                    .insert(entry_id, error.clone());
-                return Err(error);
+        let result = match spec.resolve(entry.directory.as_deref()) {
+            Ok(resolved) => {
+                let manager = runtime.preparations.clone();
+                let id = entry_id.clone();
+                let title = entry.entry.title.clone();
+                let page_url = entry.entry.url.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    manager.prepare_with_page_url(
+                        &id,
+                        &title,
+                        resolved,
+                        retry,
+                        crate::preparation_platform::launch,
+                        page_url,
+                    )
+                })
+                .await
+                .map_err(|e| e.to_string())?
             }
+            Err(error) => Err(oriel_core::preparation::PreparationFailure::from(error)),
         };
-        let manager = runtime.preparations.clone();
-        let id = entry_id.clone();
-        let title = entry.entry.title.clone();
-        let result = tauri::async_runtime::spawn_blocking(move || {
-            manager.prepare(
-                &id,
-                &title,
-                resolved,
-                retry,
-                crate::preparation_platform::launch,
-            )
-        })
-        .await
-        .map_err(|e| e.to_string())?;
         let _operation = runtime.operation.lock().await;
+        if runtime.preparations.is_closing() {
+            return Err("Oriel 正在退出。".into());
+        }
         let (current, _) = runtime.entry(&entry_id)?;
         if current.entry.preparation != entry.entry.preparation
             || current.entry.url != entry.entry.url
@@ -971,19 +976,22 @@ pub async fn web_prepare(
         {
             return Err("准备期间配置已变更，请重新准备并加载。".into());
         }
-        if let Ok(result) = &result {
+        let generation = match &result {
+            Ok(r) => Some(r.generation),
+            Err(e) => e.generation,
+        };
+        if let Some(generation) = generation {
             if runtime
                 .preparations
                 .views()
                 .iter()
                 .find(|v| v.entry_id == entry_id)
-                .is_none_or(|v| v.generation != result.generation)
+                .is_none_or(|v| v.generation != generation)
             {
                 return Err("本次准备结果已被新运行替代。".into());
             }
         }
-        let generation = result.as_ref().ok().map(|r| r.generation);
-        let outcome = result.and_then(|result| {
+        let program_result = result.map_err(|e| e.error).and_then(|result| {
             let view = runtime
                 .preparations
                 .views()
@@ -998,16 +1006,12 @@ pub async fn web_prepare(
             }) {
                 return Err("前置程序已停止或失败，请重新准备。".into());
             }
-            oriel_core::normalize_url(
-                result
-                    .url
-                    .as_deref()
-                    .or(entry.entry.url.as_deref())
-                    .ok_or("程序未返回地址，网页也未配置固定地址。")?,
-            )
+            Ok(result.url)
         });
-        let url = match outcome {
-            Ok(url) => url,
+        let target =
+            oriel_core::preparation::page_target(entry.entry.url.as_deref(), program_result);
+        let target = match target {
+            Ok(target) => target,
             Err(error) => {
                 if let Some(generation) = generation {
                     runtime
@@ -1024,7 +1028,21 @@ pub async fn web_prepare(
                 return Err(error);
             }
         };
-        runtime.preparation_errors.lock().unwrap().remove(&entry_id);
+        if let Some(error) = target.preparation_error {
+            if let Some(generation) = generation {
+                runtime
+                    .preparations
+                    .reject_result(&entry_id, generation, &error);
+            }
+            runtime
+                .preparation_errors
+                .lock()
+                .unwrap()
+                .insert(entry_id.clone(), error);
+        } else {
+            runtime.preparation_errors.lock().unwrap().remove(&entry_id);
+        }
+        let url = target.url;
         runtime.resume_urls.lock().unwrap().remove(&entry_id);
         runtime
             .prepared
@@ -1141,13 +1159,19 @@ pub fn preparation_states(
                     .entry(&run.entry_id)
                     .ok()
                     .and_then(|(entry, _)| {
-                        entry
+                        let p = entry
                             .entry
                             .preparation
-                            .as_ref()
-                            .and_then(|p| p.resolve(entry.directory.as_deref()).ok())
+                            .as_ref()?
+                            .resolve(entry.directory.as_deref())
+                            .ok()?;
+                        Some((p, entry.entry.url))
                     })
-                    .is_none_or(|p| !runtime.preparations.matches(&run.entry_id, &p));
+                    .is_none_or(|(p, url)| {
+                        !runtime
+                            .preparations
+                            .matches(&run.entry_id, &p, url.as_deref())
+                    });
             if let Some(error) = errors.get(&run.entry_id) {
                 run.error = Some(error.clone());
             }

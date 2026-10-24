@@ -6,6 +6,7 @@ if (marker) appendFileSync(marker, 'start\n')
 switch (scenario) {
   case 'once': result({ success: true, url: 'http://127.0.0.1:18080/' }); break
   case 'static': result({ success: true }); break
+  case 'page-env': result({ success: true, url: process.env.ORIEL_PAGE_URL || undefined }); break
   case 'args': result({ success: args[0] === '中文 & % ! ^ spaces' && args[1] === '"quoted"', error: undefined }); break
   case 'failure': result({ success: false, error: 'fixture failed' }); break
   case 'invalid': console.log('plain output'); break

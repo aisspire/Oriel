@@ -304,15 +304,65 @@ pub struct PreparedOutcome {
     pub generation: u64,
     pub url: Option<String>,
 }
+#[derive(Clone, Debug)]
+pub struct PreparationFailure {
+    pub generation: Option<u64>,
+    pub error: String,
+}
+impl From<String> for PreparationFailure {
+    fn from(error: String) -> Self {
+        Self {
+            generation: None,
+            error,
+        }
+    }
+}
+impl From<&str> for PreparationFailure {
+    fn from(error: &str) -> Self {
+        error.to_owned().into()
+    }
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PageTarget {
+    pub url: String,
+    pub preparation_error: Option<String>,
+}
+/// Preparation failures remain diagnostics, but never veto a registered page.
+pub fn page_target(
+    registered_url: Option<&str>,
+    outcome: Result<Option<String>>,
+) -> Result<PageTarget> {
+    let resolved = outcome.and_then(|url| {
+        normalize_url(
+            url.as_deref()
+                .or(registered_url)
+                .ok_or("程序未返回地址，网页也未配置固定地址。")?,
+        )
+    });
+    match resolved {
+        Ok(url) => Ok(PageTarget {
+            url,
+            preparation_error: None,
+        }),
+        Err(error) => match registered_url {
+            Some(url) => Ok(PageTarget {
+                url: normalize_url(url)?,
+                preparation_error: Some(error),
+            }),
+            None => Err(error),
+        },
+    }
+}
 struct Run {
     spec: Preparation,
+    page_url: Option<String>,
     view: Mutex<RunView>,
     changed: Condvar,
     cancel: AtomicBool,
     rejection: Mutex<Option<String>>,
 }
 impl Run {
-    fn wait(&self) -> Result<PreparedOutcome> {
+    fn wait(&self) -> std::result::Result<PreparedOutcome, PreparationFailure> {
         let mut v = self.view.lock().unwrap();
         loop {
             match v.state {
@@ -323,7 +373,10 @@ impl Run {
                     })
                 }
                 State::Failed | State::Stopped => {
-                    return Err(v.error.clone().unwrap_or_else(|| "前置程序已停止。".into()))
+                    return Err(PreparationFailure {
+                        generation: Some(v.generation),
+                        error: v.error.clone().unwrap_or_else(|| "前置程序已停止。".into()),
+                    })
                 }
                 _ => v = self.changed.wait(v).unwrap(),
             }
@@ -394,6 +447,18 @@ impl Preparations {
         retry: bool,
         launcher: Launcher,
     ) -> Result<PreparedOutcome> {
+        self.prepare_with_page_url(id, title, spec, retry, launcher, None)
+            .map_err(|e| e.error)
+    }
+    pub fn prepare_with_page_url(
+        &self,
+        id: &str,
+        title: &str,
+        spec: Preparation,
+        retry: bool,
+        launcher: Launcher,
+        page_url: Option<String>,
+    ) -> std::result::Result<PreparedOutcome, PreparationFailure> {
         let slot = self.slot(id);
         let run = {
             let _gate = slot.gate.lock().unwrap();
@@ -404,7 +469,10 @@ impl Preparations {
             let mut reuse = None;
             if let Some(old) = existing {
                 let state = old.view.lock().unwrap().state.clone();
-                if old.spec == spec && (!retry || state == State::Starting) {
+                if old.spec == spec
+                    && old.page_url == page_url
+                    && (!retry || state == State::Starting)
+                {
                     reuse = Some(old);
                 } else if !retry {
                     return Err("前置程序配置已变更，请重新准备并加载。".into());
@@ -421,6 +489,7 @@ impl Preparations {
                 }
                 let run = Arc::new(Run {
                     spec,
+                    page_url,
                     view: Mutex::new(RunView {
                         entry_id: id.into(),
                         title: title.into(),
@@ -514,10 +583,10 @@ impl Preparations {
         views.sort_by(|a, b| a.entry_id.cmp(&b.entry_id));
         views
     }
-    pub fn matches(&self, id: &str, spec: &Preparation) -> bool {
+    pub fn matches(&self, id: &str, spec: &Preparation, page_url: Option<&str>) -> bool {
         let slot = self.slot(id);
         let run = slot.run.lock().unwrap().clone();
-        run.is_some_and(|r| r.spec == *spec)
+        run.is_some_and(|r| r.spec == *spec && r.page_url.as_deref() == page_url)
     }
     pub fn begin_shutdown(&self) {
         self.registry.lock().unwrap().closing = true;
@@ -574,10 +643,11 @@ fn execute(run: Arc<Run>, launcher: Launcher) {
         run.changed.notify_all();
         return;
     }
-    let spawn = run
-        .spec
-        .command()
-        .and_then(|mut command| launcher(&mut command));
+    let spawn = run.spec.command().and_then(|mut command| {
+        // Always set it, including the empty value, so inherited context cannot leak.
+        command.env("ORIEL_PAGE_URL", run.page_url.as_deref().unwrap_or(""));
+        launcher(&mut command)
+    });
     let mut process = match spawn {
         Ok(p) => p,
         Err(error) => {
@@ -1021,5 +1091,111 @@ mod tests {
                 .map(|s| s.split_once(") ").unwrap().1.starts_with('Z'))
                 .unwrap_or(true)
         });
+    }
+    #[test]
+    fn page_targets_use_registered_url_without_forging_preparation_success() {
+        let target = page_target(Some("http://127.0.0.1:18080"), Ok(None)).unwrap();
+        assert_eq!(target.url, "http://127.0.0.1:18080/");
+        assert!(target.preparation_error.is_none());
+        let target = page_target(
+            Some("http://127.0.0.1:18080"),
+            Ok(Some("http://127.0.0.1:19090/".into())),
+        )
+        .unwrap();
+        assert_eq!(target.url, "http://127.0.0.1:19090/");
+        assert!(target.preparation_error.is_none());
+        for error in [
+            "address already in use",
+            "program missing",
+            "invalid JSON",
+            "timeout",
+            "stopped",
+        ] {
+            let target = page_target(Some("http://127.0.0.1:18080"), Err(error.into())).unwrap();
+            assert_eq!(target.url, "http://127.0.0.1:18080/");
+            assert_eq!(target.preparation_error.as_deref(), Some(error));
+        }
+        let target = page_target(
+            Some("https://example.com"),
+            Ok(Some("http://tauri.localhost/".into())),
+        )
+        .unwrap();
+        assert_eq!(target.url, "https://example.com/");
+        assert!(target.preparation_error.is_some());
+        assert!(page_target(None, Err("program failed".into())).is_err());
+        assert!(page_target(None, Ok(None)).is_err());
+        assert!(page_target(
+            Some("http://tauri.localhost/"),
+            Err("program failed".into())
+        )
+        .is_err());
+    }
+    #[test]
+    fn page_context_is_forwarded_and_changes_require_explicit_preparation() {
+        let temp = Temp::new();
+        let manager = Preparations::default();
+        let p = fixture("page-env", &temp.0.join("env"));
+        let first = manager
+            .prepare_with_page_url(
+                "p",
+                "p",
+                p.clone(),
+                false,
+                launch,
+                Some("http://127.0.0.1:18080/".into()),
+            )
+            .unwrap();
+        assert_eq!(first.url.as_deref(), Some("http://127.0.0.1:18080/"));
+        assert!(manager.matches("p", &p, Some("http://127.0.0.1:18080/")));
+        assert!(!manager.matches("p", &p, Some("http://127.0.0.1:19090/")));
+        assert!(manager
+            .prepare_with_page_url(
+                "p",
+                "p",
+                p.clone(),
+                false,
+                launch,
+                Some("http://127.0.0.1:19090/".into())
+            )
+            .is_err());
+        let second = manager
+            .prepare_with_page_url(
+                "p",
+                "p",
+                p.clone(),
+                true,
+                launch,
+                Some("http://127.0.0.1:19090/".into()),
+            )
+            .unwrap();
+        assert_ne!(first.generation, second.generation);
+        assert_eq!(second.url.as_deref(), Some("http://127.0.0.1:19090/"));
+        let empty = manager
+            .prepare("no-context", "no-context", p, false, launch)
+            .unwrap();
+        assert!(empty.url.is_none());
+    }
+    #[test]
+    fn actual_program_failure_keeps_its_generation_and_allows_registered_navigation() {
+        let temp = Temp::new();
+        let manager = Preparations::default();
+        let failure = manager
+            .prepare_with_page_url(
+                "p",
+                "p",
+                fixture("failure", &temp.0.join("failure")),
+                false,
+                launch,
+                Some("http://127.0.0.1:18080/".into()),
+            )
+            .unwrap_err();
+        let view = manager.views().remove(0);
+        assert_eq!(failure.generation, Some(view.generation));
+        assert_eq!(view.state, State::Failed);
+        assert!(view.cleaned);
+        let target = page_target(Some("http://127.0.0.1:18080/"), Err(failure.error)).unwrap();
+        assert!(target.preparation_error.is_some());
+        assert_eq!(target.url, "http://127.0.0.1:18080/");
+        assert_eq!(manager.views()[0].state, State::Failed);
     }
 }

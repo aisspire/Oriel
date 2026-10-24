@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { createServer } from 'node:http'
-import { mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Cdp } from './lib/cdp.mjs'
@@ -118,9 +118,55 @@ try {
   const fixtureProgram = path.join(root, 'src-tauri/crates/oriel-core/tests/fixtures/preparation.mjs')
   for (const scenario of ['failure', 'invalid', 'partial', 'duplicate', 'long', 'utf8', 'empty', 'nonzero', 'hang']) {
     const id = await save('失败-' + scenario, prep(fixtureProgram, { args: [scenario, path.join(data, scenario + '.txt')], timeoutSeconds: 1 }), origin)
-    await assert.rejects(host('web_prepare', { entryId: id, retry: false }))
+    await host('web_prepare', { entryId: id, retry: false })
+    assert.equal((await show(id)).url, origin + '/')
+    const failed = (await host('preparation_states')).find(r => r.entryId === id)
+    assert.equal(failed.state, 'failed'); assert.ok(failed.error)
+    const noAddress = await save('无登记地址-' + scenario, prep(fixtureProgram, { args: [scenario, path.join(data, 'no-url-' + scenario + '.txt')], timeoutSeconds: 1 }))
+    await assert.rejects(host('web_prepare', { entryId: noAddress, retry: false }))
   }
-  pass('malformed output, missing result, timeout and nonzero exits fail explicitly')
+  const staticPage = await save('使用登记地址', prep(fixtureProgram, { args: ['static', path.join(data, 'static.txt')] }), origin)
+  await host('web_prepare', { entryId: staticPage, retry: false })
+  assert.equal((await show(staticPage)).url, origin + '/')
+  const staticRun = (await host('preparation_states')).find(r => r.entryId === staticPage)
+  assert.equal(staticRun.url, null); assert.equal(staticRun.error, null)
+  const contextPage = await save('地址上下文', prep(fixtureProgram, { args: ['page-env', path.join(data, 'page-env.txt')] }), origin)
+  await host('web_prepare', { entryId: contextPage, retry: false })
+  assert.equal((await host('preparation_states')).find(r => r.entryId === contextPage).url, origin + '/')
+  pass('preparation failures retain diagnostics but registered pages open; omitted URLs and page context work')
+  // Exercise the actual PowerShell wrapper without making an SSH connection:
+  // a renamed Node executable stands in for ssh.exe and owns its own listener.
+  const fakeSsh = path.join(scripts, 'ssh.exe')
+  const fakeForward = path.join(scripts, 'fake-forward.mjs')
+  const forwardScript = path.join(scripts, 'ssh-port-forward.ps1')
+  await copyFile(process.execPath, fakeSsh)
+  await writeFile(fakeForward, `import {createServer} from 'node:http';const port=Number(new URL(process.env.ORIEL_PAGE_URL).port);const server=createServer((q,s)=>s.end('<title>Fake SSH forward</title>'));server.on('error',e=>{console.error(e.message);process.exit(1)});server.listen(port,'127.0.0.1',()=>console.log('fixture listener ready'))`)
+  const wrapper = await readFile(path.join(root, 'plugins/builtin/browser/script/ssh-port-forward.ps1'), 'utf8')
+  assert.match(wrapper, /\$PageUrl = ''/)
+  const command = `"${fakeSsh}" "${fakeForward}"`
+  await writeFile(forwardScript, wrapper.replace(/(\$SshCommand = @'\r?\n)[^\r\n]+/, (_match, prefix) => prefix + command))
+  const free = createServer()
+  const freePort = await listen(free)
+  await new Promise(resolve => free.close(resolve))
+  const registeredForward = `http://127.0.0.1:${freePort}/`
+  const wrapped = await save('SSH 模板无地址', prep(forwardScript, { runner: 'powershell', interpreter: null, mode: 'persistent', timeoutSeconds: 30 }), registeredForward)
+  await host('web_prepare', { entryId: wrapped, retry: false })
+  assert.equal((await show(wrapped)).url, registeredForward)
+  const wrappedRun = (await host('preparation_states')).find(r => r.entryId === wrapped)
+  assert.equal(wrappedRun.state, 'ready'); assert.equal(wrappedRun.url, null)
+  await host('preparation_stop', { entryId: wrapped })
+  await until(() => unreachable(registeredForward), 'wrapper owned listener cleanup')
+  const occupied = await save('端口已有外部程序', prep(forwardScript, { runner: 'powershell', interpreter: null, mode: 'persistent', timeoutSeconds: 30 }), origin)
+  await host('web_prepare', { entryId: occupied, retry: false })
+  assert.equal((await show(occupied)).url, origin + '/')
+  assert.equal((await host('preparation_states')).find(r => r.entryId === occupied).state, 'failed')
+  assert.equal((await fetch(origin)).ok, true)
+  const occupiedGeneration = (await host('preparation_states')).find(r => r.entryId === occupied).generation
+  await save('端口已有外部程序', prep(forwardScript, { runner: 'powershell', interpreter: null, mode: 'persistent', timeoutSeconds: 30 }), origin + '/updated', occupied)
+  assert.equal((await show(occupied)).url, origin + '/updated')
+  assert.equal((await host('preparation_states')).find(r => r.entryId === occupied).generation, occupiedGeneration)
+  pass('SSH wrapper omits URL and uses page context; occupied external port does not block the page or transfer ownership')
+
   const service = await save('持续服务', prep(persistent, { mode: 'persistent' }))
   await host('web_prepare', { entryId: service, retry: false })
   const serviceState = (await host('preparation_states')).find(r => r.entryId === service)
