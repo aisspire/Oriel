@@ -129,6 +129,10 @@ docs/design/         当前设计、视觉说明与决策记录
 
 Windows 已支持版本 2 的 `local-service-v1` 声明、规则前置等待和完整退出清理。独立工具保持自身构建、页面和业务配置；Oriel 只保存插件目录与稳定规则引用。接入方式、受信任目录执行边界及隔离联调见[本地服务与前置资源](docs/design/local-services.md)。
 
+## Script Studio
+
+Script Studio 本地脚本管理器以独立额外插件实现，使用已有本地服务及无地址栏应用布局，业务配置与运行历史由工具保存。完整目录包可放入默认或额外插件读取目录；切换页面继续运行，完整退出清理该实例托管的 Windows 进程树。接入边界与验证方式见 [Script Studio 独立插件接入](docs/design/script-studio-integration.md)。
+
 ## 统一主题
 
 工作台提供浅色与深色切换，桌面偏好保存到本地配置并迁移原 localStorage 选择。Windows 原生网页、隐藏视图和弹窗跟随工作台颜色偏好，主题切换不刷新页面或重启后台。网站固定配色及直接读取系统主题的原生工具仍由其自身控制。实现与验证边界见[统一主题](docs/design/workspace-theme.md)。
