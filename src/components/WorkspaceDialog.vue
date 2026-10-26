@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import AppIcon from './AppIcon.vue'
 import ProxyFields from './ProxyFields.vue'
 import PreparationFields from './PreparationFields.vue'
+import PreparationPanel from './PreparationPanel.vue'
 import { errorText, hostCommand, type Preparation, type ProxyPolicy, type WebEntry, type WorkspaceSnapshot } from '../lib/workspace'
 
 const props = defineProps<{
@@ -20,6 +21,8 @@ const emit = defineEmits<{
 }>()
 
 const dialog = ref<HTMLDialogElement>()
+const preparationButton = ref<HTMLButtonElement>()
+const preparationPanel = ref(false)
 const titleInput = ref<HTMLInputElement>()
 const urlInput = ref<HTMLInputElement>()
 
@@ -37,6 +40,18 @@ const titleTouched = ref(false)
 const autoSuggestedHost = ref('')
 
 const isLightweightRemove = computed(() => Boolean(props.confirmRemove && props.entry))
+
+function openPreparations() {
+  dialog.value?.close()
+  preparationPanel.value = true
+}
+
+async function closePreparations() {
+  preparationPanel.value = false
+  await nextTick()
+  dialog.value?.showModal()
+  preparationButton.value?.focus()
+}
 
 function onTitleInput() {
   titleTouched.value = true
@@ -210,6 +225,9 @@ onUnmounted(() => dialog.value?.close())
 
         <!-- 普通编辑、添加或设置模式 -->
         <template v-else>
+          <button v-if="mode === 'settings'" ref="preparationButton" class="text-button preparation-entry" type="button" aria-haspopup="dialog" :disabled="busy" @click="openPreparations">
+            <AppIcon name="terminal" />前置程序
+          </button>
           <fieldset :disabled="busy || !workspace.writable">
             <template v-if="mode !== 'settings'">
               <label class="field-label">
@@ -326,15 +344,19 @@ onUnmounted(() => dialog.value?.close())
       </footer>
     </form>
   </dialog>
+  <PreparationPanel v-if="preparationPanel" :workspace="workspace" @close="closePreparations" />
 </template>
 
 <style scoped>
 .workspace-dialog {
-  display: flex;
   flex-direction: column;
   padding: 0;
   overflow: hidden;
 }
+
+.workspace-dialog[open] { display: flex; }
+.preparation-entry { display: flex; align-items: center; gap: 8px; margin-bottom: 18px; }
+.preparation-entry svg { width: 18px; height: 18px; }
 
 .dialog-form {
   display: flex;

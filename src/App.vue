@@ -106,7 +106,6 @@ onUnmounted(() => { mounted = false; unlistenFavicon?.() })
         </button>
       </nav>
       <div class="sidebar-bottom">
-        <button v-if="workspace && desktop" class="icon-button" type="button" aria-label="前置程序" title="前置程序" @click="openPreparations()"><AppIcon name="more" /></button>
         <button v-if="workspace && desktop" class="icon-button" type="button" aria-label="重新加载接入" title="重新加载接入" :disabled="reloading" @click="reload()"><AppIcon name="refresh" /></button>
         <button v-if="workspace && desktop" class="icon-button" type="button" aria-label="工作台设置" title="工作台设置" @click="openDialog('settings')"><AppIcon name="settings" /></button>
         <button v-if="!reducedMotion && !current" class="icon-button" type="button" :aria-label="paused ? '播放首页动效' : '暂停首页动效'" :title="paused ? '播放首页动效' : '暂停首页动效'" :aria-pressed="paused" @click="paused = !paused"><AppIcon :name="paused ? 'play' : 'pause'" /></button>

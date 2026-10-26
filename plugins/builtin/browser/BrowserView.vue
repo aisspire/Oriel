@@ -60,7 +60,7 @@ onUnmounted(() => passwords.value?.close())
       </form>
       <div class="toolbar-drag-spacer" data-tauri-drag-region></div>
       <div class="browser-options">
-        <button v-if="entry.preparation" class="plain-icon" type="button" aria-label="前置程序" title="前置程序" @click="emit('preparations', entry.id)"><AppIcon name="more" /></button>
+        <button v-if="entry.preparation" class="plain-icon" type="button" aria-label="当前网页的前置程序" title="当前网页的前置程序" aria-haspopup="dialog" @click="emit('preparations', entry.id)"><AppIcon name="terminal" /></button>
         <PluginHelp :entry="entry" @active="helpOpen = $event" />
         <button class="plain-icon" type="button" aria-label="账号密码" title="账号密码" :disabled="!available" @click="openPasswords"><AppIcon name="key" /></button>
         <button v-if="entry.editable" class="plain-icon" type="button" aria-label="网页设置" title="网页设置" :disabled="!writable || busy" @click="emit('edit', entry)"><AppIcon name="settings" /></button>
