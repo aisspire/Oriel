@@ -21,6 +21,31 @@ npm run preview     # 预览生产构建
 npm run icons       # 从主 SVG 重新导出深浅主题与桌面图标
 ```
 
+### WSL 隔离构建
+
+正常开发在各平台自己的工作副本中按 lockfile 安装依赖，再执行 `npm run build`。Windows 与 WSL 共用源码目录时，已有 `node_modules` 可能缺少当前平台的原生绑定。本工作区的 WSL 构建曾因缺少 Linux Rolldown／Lightning CSS 绑定失败；需要保留工作区依赖时，直接在临时副本中安装 Linux 依赖并验证当前源码。
+
+在 WSL 的项目根目录运行以下命令。复制的是当前工作区内容，包含未提交的源码修改；不复制原 `node_modules`：
+
+```bash
+(
+  set -eu
+  oriel_build_dir="$(mktemp -d /tmp/oriel-frontend-build.XXXXXX)"
+  cp package.json package-lock.json tsconfig.json vite.config.ts index.html .node-version "$oriel_build_dir/"
+  cp -a src public "$oriel_build_dir/"
+  mkdir "$oriel_build_dir/plugins"
+  cp -a plugins/builtin "$oriel_build_dir/plugins/"
+  cd "$oriel_build_dir"
+  npm ci --offline --include=optional --no-audit --no-fund
+  npm run build
+  printf '前端产物：%s/dist\n' "$oriel_build_dir"
+)
+```
+
+`--offline` 使用本机 npm 缓存；缓存不完整时报缺少包，可在临时副本内去掉该参数重试，仍使用同一 lockfile。无需删除锁文件、升级依赖、全局安装工具或手动提取缓存包。`npm ci` 在临时副本中安装独立依赖，不覆盖工作区依赖，也不将隔离产物自动复制回工作区。
+
+2026-10-26 已在当前 WSL 环境验证离线安装、类型检查和生产构建通过，工作区与临时副本的 lockfile 均未改变。这只验证前端；Windows 宿主编译、安装包及原生界面验收仍在目标平台单独执行。执行时生成的临时目录只供本次构建使用，后续修改需重新复制当前源码。
+
 ## 桌面应用
 
 桌面外壳沿用 Tauri 2 与 Rust。已具备对应平台开发环境时：
