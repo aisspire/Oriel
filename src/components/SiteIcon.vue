@@ -1,12 +1,18 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { getCachedFavicon, requestFavicon } from '../lib/favicons'
 
-const props = defineProps<{ title: string; image?: number[] }>()
+const props = defineProps<{ title: string; entryId?: string; registeredUrl?: string | null }>()
 const failed = ref(false)
-const source = computed(() => props.image?.length
-  ? `data:image/png;base64,${btoa(props.image.map(byte => String.fromCharCode(byte)).join(''))}`
-  : '')
+
+const cachedSource = computed(() => (props.entryId && props.registeredUrl ? getCachedFavicon(props.entryId, props.registeredUrl) : undefined))
+const source = computed(() => cachedSource.value || '')
+
 watch(source, () => { failed.value = false })
+
+watch(() => [props.entryId, props.registeredUrl] as const, ([id, url]) => {
+  if (id && url && !getCachedFavicon(id, url)) void requestFavicon(id, url)
+}, { immediate: true })
 </script>
 
 <template>

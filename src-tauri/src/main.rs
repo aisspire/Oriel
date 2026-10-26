@@ -4,6 +4,7 @@ mod preparation_platform;
 mod web_pages;
 #[cfg(target_os = "windows")]
 mod window_frame;
+mod window_overlay;
 mod window_state;
 
 fn main() {
@@ -12,19 +13,18 @@ fn main() {
 
         app.manage(web_pages::WebPages::new(app.handle())?);
         window_state::create(app)?;
+        if let Err(error) = window_overlay::create(app) {
+            eprintln!("Oriel overlay unavailable; using local dialogs: {error}");
+        }
         Ok(())
     });
 
     let mut context = tauri::generate_context!();
     // Build the main window with its saved normal size before maximizing or showing it.
-    if let Some(window) = context
-        .config_mut()
-        .app
-        .windows
-        .iter_mut()
-        .find(|w| w.label == "main")
-    {
-        window.create = false;
+    for window in context.config_mut().app.windows.iter_mut() {
+        if window.label == "main" || window.label == "overlay" {
+            window.create = false;
+        }
     }
     builder
         .invoke_handler(tauri::generate_handler![
@@ -46,6 +46,12 @@ fn main() {
             web_pages::web_navigate,
             web_pages::web_action,
             web_pages::web_clear_passwords,
+            web_pages::web_favicon,
+            window_overlay::overlay_ready,
+            window_overlay::overlay_presented,
+            window_overlay::overlay_show,
+            window_overlay::overlay_hide,
+            window_overlay::overlay_supported,
         ])
         .build(context)
         .expect("Oriel could not start")

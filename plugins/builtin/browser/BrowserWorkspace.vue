@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import AppIcon from '../../../src/components/AppIcon.vue'
 import SiteIcon from '../../../src/components/SiteIcon.vue'
+import PluginHeaderActions from '../../../src/components/PluginHeaderActions.vue'
 import WindowControls from '../../../src/components/WindowControls.vue'
 import { defaultBrowserSidebar, errorText, hideWebSurface, hostCommand, type BrowserSidebar, type PluginViewProps, type WebEntry, type WorkspaceSnapshot } from '../../../src/lib/workspace'
 import BrowserView from './BrowserView.vue'
@@ -213,7 +214,7 @@ onUnmounted(() => {
         <div v-for="page in pages" :key="page.id" class="fixed-page" :class="{ 'is-active': current?.id === page.id, 'is-dragging': draggedId === page.id, 'drop-before': dropTarget === page.id && !dropAfter, 'drop-after': dropTarget === page.id && dropAfter }"
           :data-page-id="page.id" @pointerdown="startPageDrag($event, page.id)" @contextmenu.prevent="openMenu($event, page)" @keydown="menuKey($event, page)">
           <button class="fixed-page-button" type="button" :aria-label="page.title" :aria-description="domain(page)" :aria-current="current?.id === page.id ? 'page' : undefined" :title="`${page.title} · ${domain(page)}`" @click="selectPage(page.id)">
-            <span class="fixed-page-icon"><SiteIcon :title="page.title" :image="workspace.favicons[page.id]" /></span>
+            <span class="fixed-page-icon"><SiteIcon :title="page.title" :entry-id="page.id" :registered-url="page.url" /></span>
             <span v-if="!collapsed" class="fixed-page-name">{{ page.title }}</span>
           </button>
           <button v-if="!collapsed" class="plain-icon fixed-page-menu" type="button" :aria-label="`${page.title}的菜单`" title="网页菜单" aria-haspopup="dialog" :disabled="saving" @click="openMenu($event, page)"><AppIcon name="more" /></button>
@@ -226,9 +227,9 @@ onUnmounted(() => {
     </aside>
     <div class="browser-page-area">
       <div v-if="error" class="browser-error" role="alert"><span>{{ error }}</span><button class="text-button" type="button" @click="error = ''">关闭</button></div>
-      <BrowserView v-if="current" :entry="current" :workspace="workspace" :selected-id="selectedId" :supported="supported" :writable="writable" :suspended="suspended || menuOpen || resizing" @edit="emit('edit', $event)" @settings="emit('settings')" @preparations="emit('preparations', $event)" />
+      <BrowserView v-if="current" :slot-entry="entry" :entry="current" :workspace="workspace" :selected-id="selectedId" :supported="supported" :writable="writable" :suspended="suspended || menuOpen || resizing" @edit="emit('edit', $event)" @settings="emit('settings')" @preparations="emit('preparations', $event)" />
       <template v-else>
-        <header class="browser-toolbar browser-empty-toolbar"><div class="toolbar-drag-spacer" data-tauri-drag-region></div><WindowControls /></header>
+        <header class="browser-toolbar browser-empty-toolbar"><div class="toolbar-drag-spacer" data-tauri-drag-region></div><PluginHeaderActions :entry="entry" :busy="false" :can-reload="false" @settings="emit('settings')" @preparations="emit('preparations')" /><WindowControls /></header>
         <div class="browser-empty fixed-browser-empty"><AppIcon name="globe" /><p>添加网页，放在手边。</p><button class="primary-button" type="button" :disabled="!writable" @click="emit('add')">添加网页</button></div>
       </template>
     </div>

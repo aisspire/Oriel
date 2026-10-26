@@ -63,7 +63,10 @@ main:focus:not(:focus-visible) { outline: none; }
 .brand-link { display: grid; place-items: center; width: 48px; height: 48px; border-radius: 13px; }
 .brand-link img { display: block; border-radius: 11px; box-shadow: 0 3px 8px #27283214; -webkit-user-drag: none; }
 .sidebar-divider { width: 22px; height: 1px; margin: 27px 0; background: var(--line); }
-.nav-link { display: grid; place-items: center; width: 46px; height: 46px; border-radius: 50%; }
+.nav-link { position: relative; display: grid; place-items: center; width: 46px; height: 46px; border-radius: 50%; }
+.slot-badge { position: absolute; top: 7px; right: 7px; width: 8px; height: 8px; border-radius: 50%; background: #3b82f6; box-shadow: 0 0 0 2px var(--sidebar); pointer-events: none; }
+.slot-badge.badge-status { background: #10b981; }
+.slot-badge.badge-count { min-width: 14px; height: 14px; padding: 0 3px; border-radius: 7px; font-size: 9px; line-height: 14px; color: white; background: #ef4444; text-align: center; }
 .nav-link.is-active { color: #fafafa; background: #30313a; box-shadow: 0 4px 10px #25253314; }
 .nav-link svg { width: 21px; height: 21px; }
 .sidebar-bottom { display: flex; flex-direction: column; align-items: center; gap: 14px; margin-top: auto; }

@@ -140,6 +140,7 @@ pub fn create(app: &tauri::App) -> tauri::Result<()> {
     }
     let observed_window = window.clone();
     window.on_window_event(move |event| {
+        super::window_overlay::sync_on_event(&observed_window, event);
         if !matches!(
             event,
             WindowEvent::Moved(_)

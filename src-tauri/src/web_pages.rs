@@ -135,7 +135,6 @@ pub struct HostSnapshot {
     snapshot: Snapshot,
     browser_supported: bool,
     config_path: String,
-    favicons: HashMap<String, Vec<u8>>,
 }
 
 impl WebPages {
@@ -189,28 +188,11 @@ impl WebPages {
                 .diagnostics
                 .push(format!("无法创建默认插件读取目录：{error}"));
         }
-        let favicons = snapshot
-            .entries
-            .iter()
-            .filter_map(|entry| {
-                let url = entry.entry.url.as_deref()?;
-                let path = self.data_root.join("favicons").join(&entry.entry.id);
-                if std::fs::metadata(&path).ok()?.len() > (MAX_FAVICON_BYTES + 8193) as u64 {
-                    return None;
-                }
-                let cached = std::fs::read(path).ok()?;
-                let separator = cached.iter().position(|byte| *byte == b'\n')?;
-                let origin_url = std::str::from_utf8(&cached[..separator]).ok()?;
-                let image = &cached[separator + 1..];
-                (oriel_core::same_web_origin(url, origin_url) && valid_favicon(image))
-                    .then(|| (entry.entry.id.clone(), image.to_vec()))
-            })
-            .collect();
+        snapshot.theme = Some(*self.theme.lock().unwrap());
         HostSnapshot {
             snapshot,
             browser_supported: cfg!(windows),
             config_path: self.config_path.display().to_string(),
-            favicons,
         }
     }
 
@@ -560,7 +542,7 @@ fn platform_popup_init(window: &tauri::WebviewWindow) {
 }
 
 /// Every application command has a caller guard in addition to Tauri's per-view ACL.
-fn authorize(caller: &Webview, _request: &tauri::ipc::Request<'_>) -> Result<()> {
+pub(crate) fn authorize(caller: &Webview) -> Result<()> {
     let url = caller.url().map_err(|_| "无法确认宿主调用来源。")?;
     let local = if cfg!(debug_assertions) {
         url.scheme() == "http" && url.host_str() == Some("127.0.0.1") && url.port() == Some(1420)
@@ -568,7 +550,7 @@ fn authorize(caller: &Webview, _request: &tauri::ipc::Request<'_>) -> Result<()>
         url.scheme() == "tauri" && url.host_str() == Some("localhost")
             || matches!(url.scheme(), "http" | "https") && url.host_str() == Some("tauri.localhost")
     };
-    if caller.label() != "main" || !local {
+    if (!matches!(caller.label(), "main" | "overlay")) || !local {
         return Err("此网页无权调用宿主管理能力。".into());
     }
     Ok(())
@@ -637,6 +619,11 @@ fn publish_favicon(app: &AppHandle, id: &str, label: &str, registered_url: &str,
         .and_then(|_| std::fs::write(&pending, cached))
         .and_then(|_| std::fs::rename(&pending, directory.join(id)));
     let _ = std::fs::remove_file(pending);
+    // Also save as {entryId}.png for direct asset and external viewer access
+    let pending_png = directory.join(format!("{}.png.tmp", unique_id()));
+    let _ = std::fs::write(&pending_png, &image)
+        .and_then(|_| std::fs::rename(&pending_png, directory.join(format!("{id}.png"))));
+    let _ = std::fs::remove_file(pending_png);
     let _ = app.emit_to(
         EventTarget::webview("main"),
         "web-favicon",
@@ -648,24 +635,104 @@ fn publish_favicon(app: &AppHandle, id: &str, label: &str, registered_url: &str,
     );
 }
 
+fn to_base64(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0] as usize;
+        let b1 = chunk.get(1).copied().unwrap_or(0) as usize;
+        let b2 = chunk.get(2).copied().unwrap_or(0) as usize;
+        let triple = (b0 << 16) | (b1 << 8) | b2;
+        out.push(TABLE[(triple >> 18) & 0x3F] as char);
+        out.push(TABLE[(triple >> 12) & 0x3F] as char);
+        if chunk.len() > 1 {
+            out.push(TABLE[(triple >> 6) & 0x3F] as char);
+        } else {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            out.push(TABLE[triple & 0x3F] as char);
+        } else {
+            out.push('=');
+        }
+    }
+    out
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FaviconResult {
+    entry_id: String,
+    registered_url: String,
+    data_url: String,
+}
+
+#[tauri::command]
+pub fn web_favicon(
+    caller: Webview,
+    runtime: tauri::State<'_, WebPages>,
+    entry_id: String,
+) -> Result<Option<FaviconResult>> {
+    authorize(&caller)?;
+    let (entry, _) = match runtime.entry(&entry_id) {
+        Ok(res) => res,
+        Err(_) => return Ok(None),
+    };
+    let url = match entry.entry.url.as_deref() {
+        Some(u) => u,
+        None => return Ok(None),
+    };
+    let directory = runtime.data_root.join("favicons");
+    let path = directory.join(&entry_id);
+    if std::fs::metadata(&path).ok().map(|m| m.len()).unwrap_or(0)
+        > (MAX_FAVICON_BYTES + 8193) as u64
+    {
+        return Ok(None);
+    }
+    let cached = match std::fs::read(&path) {
+        Ok(c) => c,
+        Err(_) => return Ok(None),
+    };
+    let separator = match cached.iter().position(|byte| *byte == b'\n') {
+        Some(s) => s,
+        None => return Ok(None),
+    };
+    let origin_url = match std::str::from_utf8(&cached[..separator]) {
+        Ok(u) => u,
+        Err(_) => return Ok(None),
+    };
+    let image = &cached[separator + 1..];
+    if oriel_core::same_web_origin(url, origin_url) && valid_favicon(image) {
+        let png_path = directory.join(format!("{entry_id}.png"));
+        if !png_path.exists() {
+            let _ = std::fs::write(&png_path, image);
+        }
+        Ok(Some(FaviconResult {
+            entry_id,
+            registered_url: url.to_owned(),
+            data_url: format!("data:image/png;base64,{}", to_base64(image)),
+        }))
+    } else {
+        Ok(None)
+    }
+}
+
 #[tauri::command]
 pub fn workspace_snapshot(
     caller: Webview,
-    request: tauri::ipc::Request<'_>,
     runtime: tauri::State<'_, WebPages>,
 ) -> Result<HostSnapshot> {
-    authorize(&caller, &request)?;
+    authorize(&caller)?;
     Ok(runtime.snapshot())
 }
 
 #[tauri::command]
 pub async fn workspace_reload(
     caller: Webview,
-    request: tauri::ipc::Request<'_>,
     app: AppHandle,
     runtime: tauri::State<'_, WebPages>,
 ) -> Result<HostSnapshot> {
-    authorize(&caller, &request)?;
+    authorize(&caller)?;
     let _operation = runtime.operation.lock().await;
     *runtime.store.lock().unwrap() = ConfigStore::open(runtime.config_path.clone());
     let loaded_theme = runtime.store.lock().unwrap().workspace.theme;
@@ -678,7 +745,9 @@ pub async fn workspace_reload(
             diagnostics: theme_errors.clone(),
             persisted: true,
         };
-        let _ = app.emit_to(EventTarget::webview("main"), "workspace-theme", &result);
+        for label in ["main", "overlay"] {
+            let _ = app.emit_to(EventTarget::webview(label), "workspace-theme", &result);
+        }
     }
     let errors = runtime.reconcile(&app).await;
     let mut snapshot = runtime.snapshot();
@@ -690,7 +759,6 @@ pub async fn workspace_reload(
 #[tauri::command]
 pub async fn workspace_save_entry(
     caller: Webview,
-    request: tauri::ipc::Request<'_>,
     app: AppHandle,
     runtime: tauri::State<'_, WebPages>,
     id: Option<String>,
@@ -700,7 +768,7 @@ pub async fn workspace_save_entry(
     preparation: Option<oriel_core::preparation::Preparation>,
     replace_preparation: Option<bool>,
 ) -> Result<HostSnapshot> {
-    authorize(&caller, &request)?;
+    authorize(&caller)?;
     let _operation = runtime.operation.lock().await;
     runtime.store.lock().unwrap().save_entry_prepared(
         id,
@@ -719,12 +787,11 @@ pub async fn workspace_save_entry(
 #[tauri::command]
 pub async fn workspace_delete_entry(
     caller: Webview,
-    request: tauri::ipc::Request<'_>,
     app: AppHandle,
     runtime: tauri::State<'_, WebPages>,
     id: String,
 ) -> Result<HostSnapshot> {
-    authorize(&caller, &request)?;
+    authorize(&caller)?;
     let _operation = runtime.operation.lock().await;
     if !runtime
         .store
@@ -758,11 +825,10 @@ pub async fn workspace_delete_entry(
 #[tauri::command]
 pub async fn workspace_reorder_entries(
     caller: Webview,
-    request: tauri::ipc::Request<'_>,
     runtime: tauri::State<'_, WebPages>,
     ids: Vec<String>,
 ) -> Result<HostSnapshot> {
-    authorize(&caller, &request)?;
+    authorize(&caller)?;
     let _operation = runtime.operation.lock().await;
     runtime.store.lock().unwrap().reorder_entries(ids)?;
     Ok(runtime.snapshot())
@@ -771,11 +837,10 @@ pub async fn workspace_reorder_entries(
 #[tauri::command]
 pub async fn workspace_browser_sidebar(
     caller: Webview,
-    request: tauri::ipc::Request<'_>,
     runtime: tauri::State<'_, WebPages>,
     sidebar: BrowserSidebar,
 ) -> Result<HostSnapshot> {
-    authorize(&caller, &request)?;
+    authorize(&caller)?;
     let _operation = runtime.operation.lock().await;
     runtime
         .store
@@ -788,14 +853,13 @@ pub async fn workspace_browser_sidebar(
 #[tauri::command]
 pub async fn workspace_settings(
     caller: Webview,
-    request: tauri::ipc::Request<'_>,
     app: AppHandle,
     runtime: tauri::State<'_, WebPages>,
     default_proxy: ProxyPolicy,
     plugin_directories: Vec<PathBuf>,
     plugin_roots: Option<Vec<PathBuf>>,
 ) -> Result<HostSnapshot> {
-    authorize(&caller, &request)?;
+    authorize(&caller)?;
     let _operation = runtime.operation.lock().await;
     {
         let mut store = runtime.store.lock().unwrap();
@@ -816,11 +880,10 @@ pub async fn workspace_settings(
 #[tauri::command]
 pub fn plugin_documentation(
     caller: Webview,
-    request: tauri::ipc::Request<'_>,
     runtime: tauri::State<'_, WebPages>,
     entry_id: String,
 ) -> Result<String> {
-    authorize(&caller, &request)?;
+    authorize(&caller)?;
     runtime
         .store
         .lock()
@@ -831,14 +894,13 @@ pub fn plugin_documentation(
 #[tauri::command]
 pub async fn web_show(
     caller: Webview,
-    request: tauri::ipc::Request<'_>,
     app: AppHandle,
     runtime: tauri::State<'_, WebPages>,
     entry_id: Option<String>,
     bounds: ViewBounds,
     visible: bool,
 ) -> Result<Option<WebSessionState>> {
-    authorize(&caller, &request)?;
+    authorize(&caller)?;
     bounds.validate()?;
     let _operation = runtime.operation.lock().await;
     *runtime.display.lock().unwrap() = Display {
@@ -867,13 +929,12 @@ pub async fn web_show(
 #[tauri::command]
 pub async fn web_navigate(
     caller: Webview,
-    request: tauri::ipc::Request<'_>,
     app: AppHandle,
     runtime: tauri::State<'_, WebPages>,
     entry_id: String,
     url: String,
 ) -> Result<()> {
-    authorize(&caller, &request)?;
+    authorize(&caller)?;
     let url = oriel_core::normalize_url(&url)?;
     let _operation = runtime.operation.lock().await;
     let view = runtime.ensure(&app, &entry_id).await?;
@@ -890,13 +951,12 @@ pub async fn web_navigate(
 #[tauri::command]
 pub async fn web_action(
     caller: Webview,
-    request: tauri::ipc::Request<'_>,
     app: AppHandle,
     runtime: tauri::State<'_, WebPages>,
     entry_id: String,
     action: String,
 ) -> Result<()> {
-    authorize(&caller, &request)?;
+    authorize(&caller)?;
     if !matches!(action.as_str(), "back" | "forward" | "reload" | "stop") {
         return Err("不支持的浏览操作。".into());
     }
@@ -908,12 +968,11 @@ pub async fn web_action(
 #[tauri::command]
 pub async fn web_clear_passwords(
     caller: Webview,
-    request: tauri::ipc::Request<'_>,
     app: AppHandle,
     runtime: tauri::State<'_, WebPages>,
     entry_id: String,
 ) -> Result<()> {
-    authorize(&caller, &request)?;
+    authorize(&caller)?;
     let _operation = runtime.operation.lock().await;
     let view = runtime.ensure(&app, &entry_id).await?;
     platform::clear_passwords(&view).await?;
@@ -924,13 +983,12 @@ pub async fn web_clear_passwords(
 #[tauri::command]
 pub async fn web_prepare(
     caller: Webview,
-    request: tauri::ipc::Request<'_>,
     app: AppHandle,
     runtime: tauri::State<'_, WebPages>,
     entry_id: String,
     retry: bool,
 ) -> Result<()> {
-    authorize(&caller, &request)?;
+    authorize(&caller)?;
     if runtime.preparations.is_closing() {
         return Err("Oriel 正在退出。".into());
     }
@@ -1126,10 +1184,9 @@ pub struct PreparationStatus {
 #[tauri::command]
 pub fn preparation_states(
     caller: Webview,
-    request: tauri::ipc::Request<'_>,
     runtime: tauri::State<'_, WebPages>,
 ) -> Result<Vec<PreparationStatus>> {
-    authorize(&caller, &request)?;
+    authorize(&caller)?;
     let errors = runtime.preparation_errors.lock().unwrap().clone();
     let mut runs = runtime.preparations.views();
     for (id, error) in &errors {
@@ -1186,11 +1243,10 @@ pub fn preparation_states(
 #[tauri::command]
 pub fn preparation_logs(
     caller: Webview,
-    request: tauri::ipc::Request<'_>,
     runtime: tauri::State<'_, WebPages>,
     entry_id: String,
 ) -> Result<Vec<String>> {
-    authorize(&caller, &request)?;
+    authorize(&caller)?;
     Ok(runtime
         .preparations
         .views()
@@ -1202,11 +1258,10 @@ pub fn preparation_logs(
 #[tauri::command]
 pub async fn preparation_stop(
     caller: Webview,
-    request: tauri::ipc::Request<'_>,
     runtime: tauri::State<'_, WebPages>,
     entry_id: String,
 ) -> Result<()> {
-    authorize(&caller, &request)?;
+    authorize(&caller)?;
     let manager = runtime.preparations.clone();
     let id = entry_id.clone();
     tauri::async_runtime::spawn_blocking(move || manager.stop(&id))
@@ -1218,24 +1273,12 @@ pub async fn preparation_stop(
     Ok(())
 }
 #[tauri::command]
-pub async fn preparation_pick_file(
-    caller: Webview,
-    app: AppHandle,
-    request: tauri::ipc::Request<'_>,
-) -> Result<Option<String>> {
-    authorize(&caller, &request)?;
+pub async fn preparation_pick_file(caller: Webview) -> Result<Option<String>> {
+    authorize(&caller)?;
     #[cfg(windows)]
-    let owner = app
-        .get_window("main")
-        .ok_or("主窗口不可用。")?
-        .hwnd()
-        .map_err(|e| e.to_string())?
-        .0 as usize;
+    let owner = caller.window().hwnd().map_err(|e| e.to_string())?.0 as usize;
     #[cfg(not(windows))]
-    let owner = {
-        let _ = app;
-        0
-    };
+    let owner = 0;
     tauri::async_runtime::spawn_blocking(move || crate::preparation_platform::pick_file(owner))
         .await
         .map_err(|e| e.to_string())?
@@ -1256,13 +1299,12 @@ pub fn native_theme(app: &AppHandle) -> tauri::Theme {
 #[tauri::command]
 pub async fn workspace_theme(
     caller: Webview,
-    request: tauri::ipc::Request<'_>,
     app: AppHandle,
     runtime: tauri::State<'_, WebPages>,
     theme: Option<Theme>,
     legacy: Option<Theme>,
 ) -> Result<ThemeResult> {
-    authorize(&caller, &request)?;
+    authorize(&caller)?;
     let _operation = runtime.operation.lock().await;
     let initialized = runtime
         .theme_initialized
@@ -1295,7 +1337,9 @@ pub async fn workspace_theme(
         diagnostics,
         persisted,
     };
-    let _ = app.emit_to(EventTarget::webview("main"), "workspace-theme", &result);
+    for label in ["main", "overlay"] {
+        let _ = app.emit_to(EventTarget::webview(label), "workspace-theme", &result);
+    }
     Ok(result)
 }
 async fn propagate_theme(app: &AppHandle) -> Vec<String> {

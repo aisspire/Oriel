@@ -3,6 +3,7 @@ import { computed, nextTick, onUnmounted, ref, useTemplateRef, watch } from 'vue
 import AppIcon from './AppIcon.vue'
 import WindowControls from './WindowControls.vue'
 import PluginHelp from './PluginHelp.vue'
+import PluginHeaderActions from './PluginHeaderActions.vue'
 import { useWebSession } from '../composables/useWebSession'
 import { hideWebSurface, type PluginViewProps } from '../lib/workspace'
 
@@ -30,6 +31,7 @@ onUnmounted(closeMenu)
   <section class="browser-view tool-application" :aria-label="entry.title">
     <header class="application-toolbar" aria-label="工具应用">
       <div class="application-drag-region" data-tauri-drag-region></div>
+      <PluginHeaderActions :entry="entry" :busy="busy" :can-reload="available && Boolean(state.url)" @reload="run('web_action', { action: 'reload' })" @settings="settings" @preparations="emit('preparations', $event)" />
       <PluginHelp :entry="entry" @active="helpOpen = $event" />
       <button class="plain-icon" type="button" aria-label="应用操作" title="应用操作" aria-haspopup="dialog" @click="openMenu"><AppIcon name="more" /></button>
       <WindowControls />

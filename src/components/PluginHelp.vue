@@ -2,19 +2,25 @@
 import { nextTick, onUnmounted, ref, watch } from 'vue'
 import AppIcon from './AppIcon.vue'
 import DocumentContent from './DocumentContent.vue'
-import { errorText, hideWebSurface, hostCommand, type WebEntry } from '../lib/workspace'
+import { errorText, hideWebSurface, hostCommand, showOverlay, type WebEntry } from '../lib/workspace'
 
 const props = defineProps<{ entry: WebEntry }>()
 const emit = defineEmits<{ active: [value: boolean] }>()
 const dialog = ref<HTMLDialogElement>()
 const trigger = ref<HTMLButtonElement>()
 const active = ref(false)
+const opening = ref(false)
 const loading = ref(false)
 const text = ref('')
 const error = ref('')
 let generation = 0
 async function open() {
-  if (active.value) return
+  if (active.value || opening.value) return
+  opening.value = true
+  const ok = await showOverlay({ mode: 'help', entryId: props.entry.id })
+  opening.value = false
+  if (ok) return
+
   const current = ++generation
   active.value = true; loading.value = true; text.value = ''; error.value = ''
   emit('active', true)

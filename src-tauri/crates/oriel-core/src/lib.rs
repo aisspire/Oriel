@@ -134,6 +134,73 @@ pub struct WebEntry {
     pub preparation: Option<preparation::Preparation>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginSlot {
+    pub target: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub badge_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry_id: Option<String>,
+}
+
+pub fn validate_slot(slot: &PluginSlot) -> Result<()> {
+    if !matches!(slot.target.as_str(), "sidebar:badge" | "header:action") {
+        return Err("插槽目标类型无效，仅支持 sidebar:badge 或 header:action。".into());
+    }
+    if let Some(id) = &slot.id {
+        if id.trim().is_empty() || id.len() > 64 {
+            return Err("插槽 ID 无效或过长。".into());
+        }
+    }
+    if let Some(title) = &slot.title {
+        if title.len() > 128 {
+            return Err("插槽标题过长。".into());
+        }
+    }
+    if let Some(icon) = slot.icon.as_deref() {
+        if !matches!(
+            icon,
+            "refresh"
+                | "reload"
+                | "settings"
+                | "terminal"
+                | "play"
+                | "pause"
+                | "panel"
+                | "more"
+                | "home"
+        ) {
+            return Err("插槽图标无效。".into());
+        }
+    }
+    if slot.target == "header:action"
+        && !matches!(
+            slot.action.as_deref(),
+            Some("reload" | "refresh" | "settings" | "preparations")
+        )
+    {
+        return Err("标题栏动作仅支持 reload／refresh、settings 或 preparations。".into());
+    }
+    if slot.target == "sidebar:badge" && slot.action.is_some() {
+        return Err("侧栏徽标不支持动作。".into());
+    }
+    if let Some(kind) = slot.badge_type.as_deref() {
+        if slot.target != "sidebar:badge" || !matches!(kind, "dot" | "status" | "count") {
+            return Err("徽标类型无效。".into());
+        }
+    }
+    Ok(())
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PluginManifest {
@@ -149,6 +216,8 @@ pub struct PluginManifest {
     pub documentation: Option<String>,
     #[serde(default)]
     pub lifecycle: Option<services::Lifecycle>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub slots: Vec<PluginSlot>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -212,6 +281,8 @@ pub struct RegisteredEntry {
     pub plugin_name: String,
     pub plugin_icon: Option<PluginIcon>,
     pub documentation: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub slots: Vec<PluginSlot>,
     #[serde(skip)]
     pub directory: Option<PathBuf>,
 }
@@ -511,6 +582,7 @@ impl ConfigStore {
                     && (plugin.lifecycle.is_some()
                         || plugin.icon.is_some()
                         || plugin.documentation.is_some()
+                        || !plugin.slots.is_empty()
                         || plugin.entries.iter().any(|e| {
                             e.service.is_some()
                                 || !e.prerequisites.is_empty()
@@ -519,6 +591,9 @@ impl ConfigStore {
                 || plugin_ids.contains(&plugin.id)
             {
                 return Err("插件身份、声明版本或能力无效／重复。".into());
+            }
+            for slot in &plugin.slots {
+                validate_slot(slot)?;
             }
             if plugin.schema_version < 3 && plugin.entries.iter().any(|e| e.preparation.is_some()) {
                 return Err("前置程序需要插件声明版本 3。".into());
@@ -556,20 +631,55 @@ impl ConfigStore {
                     return Err("插件入口 ID 重复或过长。".into());
                 }
             }
+            let mut slot_ids = HashSet::new();
+            for slot in &plugin.slots {
+                if let Some(id) = &slot.id {
+                    if !slot_ids.insert(id) {
+                        return Err("插槽 ID 重复。".into());
+                    }
+                }
+                if let Some(id) = &slot.entry_id {
+                    if !plugin
+                        .entries
+                        .iter()
+                        .any(|entry| entry.id == *id || entry.id == format!("{}.{}", plugin.id, id))
+                    {
+                        return Err("插槽关联的入口不存在。".into());
+                    }
+                }
+            }
             if let Some(service) = service {
                 snapshot.services.push(service);
             }
-            plugin_ids.insert(plugin.id);
+            plugin_ids.insert(plugin.id.clone());
             entry_ids.extend(pending_ids);
+            let plugin_slots = plugin.slots;
+            let plugin_id = plugin.id.clone();
             snapshot
                 .entries
-                .extend(plugin.entries.into_iter().map(|entry| RegisteredEntry {
-                    entry,
-                    editable: false,
-                    plugin_name: plugin.name.clone(),
-                    plugin_icon: plugin.icon.clone(),
-                    documentation: plugin.documentation.clone(),
-                    directory: directory.map(Path::to_path_buf),
+                .extend(plugin.entries.into_iter().map(|entry| {
+                    let entry_slots = plugin_slots
+                        .iter()
+                        .filter(|s| match &s.entry_id {
+                            Some(target_id) => {
+                                target_id == &entry.id
+                                    || entry.id.strip_prefix(&format!("{}.", plugin_id))
+                                        == Some(target_id)
+                            }
+                            None => true,
+                        })
+                        .cloned()
+                        .collect();
+
+                    RegisteredEntry {
+                        entry,
+                        editable: false,
+                        plugin_name: plugin.name.clone(),
+                        plugin_icon: plugin.icon.clone(),
+                        documentation: plugin.documentation.clone(),
+                        slots: entry_slots,
+                        directory: directory.map(Path::to_path_buf),
+                    }
                 }));
             Ok(())
         };
@@ -599,6 +709,7 @@ impl ConfigStore {
                         plugin_name: "浏览器".into(),
                         plugin_icon: None,
                         documentation: None,
+                        slots: vec![],
                         directory: None,
                     }),
             );
@@ -1413,5 +1524,128 @@ mod tests {
         assert!(!store.snapshot(BUILTIN).writable);
         assert!(store.commit(Workspace::default()).is_err());
         assert_eq!(fs::read_to_string(dir.config()).unwrap(), original);
+    }
+    #[test]
+    fn plugin_slots_are_parsed_validated_and_mapped_to_registered_entries() {
+        let dir = TestDir::new();
+        let plugin = dir.0.join("plugins/with-slots");
+        fs::create_dir_all(&plugin).unwrap();
+        let manifest = serde_json::json!({
+            "schemaVersion": 2,
+            "id": "example.slots",
+            "name": "插槽插件",
+            "version": "1.0.0",
+            "capabilities": ["web-page"],
+            "entries": [
+                { "id": "main-view", "title": "主页面", "kind": "web-page", "url": "https://example.com" },
+                { "id": "sub-view", "title": "子页面", "kind": "web-page", "url": "https://example.com/sub" }
+            ],
+            "slots": [
+                {
+                    "target": "sidebar:badge",
+                    "badgeType": "status",
+                    "title": "运行中",
+                    "entryId": "main-view"
+                },
+                {
+                    "target": "header:action",
+                    "id": "quick-refresh",
+                    "title": "刷新状态",
+                    "icon": "refresh",
+                    "action": "reload"
+                }
+            ]
+        });
+        fs::write(plugin.join("plugin.json"), manifest.to_string()).unwrap();
+        let store = ConfigStore::open(dir.config());
+        let snapshot = store.snapshot(BUILTIN);
+        assert!(
+            snapshot.diagnostics.is_empty(),
+            "{:?}",
+            snapshot.diagnostics
+        );
+        let main_entry = snapshot
+            .entries
+            .iter()
+            .find(|e| e.entry.id == "example.slots.main-view")
+            .unwrap();
+        let sub_entry = snapshot
+            .entries
+            .iter()
+            .find(|e| e.entry.id == "example.slots.sub-view")
+            .unwrap();
+
+        assert_eq!(main_entry.slots.len(), 2);
+        assert_eq!(main_entry.slots[0].target, "sidebar:badge");
+        assert_eq!(main_entry.slots[0].badge_type.as_deref(), Some("status"));
+        assert_eq!(main_entry.slots[1].target, "header:action");
+        assert_eq!(main_entry.slots[1].action.as_deref(), Some("reload"));
+
+        assert_eq!(sub_entry.slots.len(), 1);
+        assert_eq!(sub_entry.slots[0].target, "header:action");
+    }
+    #[test]
+    fn invalid_slot_actions_icons_and_entry_references_are_isolated() {
+        let dir = TestDir::new();
+        let plugins = dir.0.join("plugins");
+        let valid = plugins.join("valid");
+        let invalid = plugins.join("invalid");
+        fs::create_dir_all(&valid).unwrap();
+        fs::create_dir_all(&invalid).unwrap();
+        let mut manifest = serde_json::json!({
+            "schemaVersion": 2, "id": "example.valid", "name": "有效插件", "version": "1",
+            "capabilities": ["web-page"],
+            "entries": [{ "id": "view", "title": "页面", "kind": "web-page", "url": "https://example.com" }]
+        });
+        fs::write(valid.join("plugin.json"), manifest.to_string()).unwrap();
+        manifest["id"] = "example.invalid".into();
+        for slot in [
+            serde_json::json!({"target":"header:action", "action":"execute"}),
+            serde_json::json!({"target":"header:action", "action":"reload", "icon":"unknown"}),
+            serde_json::json!({"target":"header:action", "action":"reload", "entryId":"missing"}),
+            serde_json::json!({"target":"sidebar:badge", "badgeType":"unknown"}),
+        ] {
+            manifest["slots"] = serde_json::json!([slot]);
+            fs::write(invalid.join("plugin.json"), manifest.to_string()).unwrap();
+            let snapshot = ConfigStore::open(dir.config()).snapshot(BUILTIN);
+            assert_eq!(snapshot.diagnostics.len(), 1);
+            assert!(snapshot
+                .entries
+                .iter()
+                .any(|e| e.entry.id == "example.valid.view"));
+            assert!(!snapshot
+                .entries
+                .iter()
+                .any(|e| e.entry.id.starts_with("example.invalid.")));
+        }
+    }
+    #[test]
+    fn invalid_slots_reject_plugin_manifest() {
+        let dir = TestDir::new();
+        let plugin = dir.0.join("plugins/bad-slots");
+        fs::create_dir_all(&plugin).unwrap();
+        let mut manifest = serde_json::json!({
+            "schemaVersion": 2,
+            "id": "example.bad-slots",
+            "name": "坏插槽插件",
+            "version": "1.0.0",
+            "capabilities": ["web-page"],
+            "entries": [{ "id": "view", "title": "页面", "kind": "web-page", "url": "https://example.com" }],
+            "slots": [
+                { "target": "unknown:target", "title": "非法" }
+            ]
+        });
+        fs::write(plugin.join("plugin.json"), manifest.to_string()).unwrap();
+        let store = ConfigStore::open(dir.config());
+        let snapshot = store.snapshot(BUILTIN);
+        assert_eq!(snapshot.entries.len(), 1);
+        assert_eq!(snapshot.diagnostics.len(), 1);
+
+        manifest["schemaVersion"] = 1.into();
+        manifest["slots"] = serde_json::json!([{ "target": "sidebar:badge" }]);
+        fs::write(plugin.join("plugin.json"), manifest.to_string()).unwrap();
+        let snapshot = store.snapshot(BUILTIN);
+        assert_eq!(snapshot.entries.len(), 1);
+        assert_eq!(snapshot.diagnostics.len(), 1);
     }
 }

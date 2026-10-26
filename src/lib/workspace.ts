@@ -16,6 +16,16 @@ export interface PreparationState {
   state: 'starting' | 'ready' | 'completed' | 'failed' | 'stopping' | 'stopped'
   url: string | null; error: string | null; exitCode: number | null; cleaned: boolean; configurationChanged: boolean
 }
+export interface PluginSlot {
+  target: 'sidebar:badge' | 'header:action' | string
+  id?: string
+  title?: string
+  icon?: string
+  action?: string
+  badgeType?: 'dot' | 'count' | 'status' | string
+  entryId?: string
+}
+
 export interface WebEntry {
   id: string
   title: string
@@ -28,6 +38,12 @@ export interface WebEntry {
   pluginName: string
   pluginIcon?: 'terminal' | null
   documentation: string | null
+  slots?: PluginSlot[]
+}
+
+export function getSlots(entry: WebEntry | undefined, target: string): PluginSlot[] {
+  if (!entry?.slots) return []
+  return entry.slots.filter(s => s.target === target)
 }
 export interface WorkspaceSnapshot {
   entries: WebEntry[]
@@ -40,7 +56,6 @@ export interface WorkspaceSnapshot {
   browserSupported: boolean
   configPath: string
   browserSidebar: BrowserSidebar
-  favicons: Record<string, number[]>
   theme: 'light' | 'dark' | null
 }
 export interface BrowserSidebar { collapsed: boolean; width: number }
@@ -81,7 +96,7 @@ export function loadWorkspace(): Promise<WorkspaceSnapshot> {
     pluginRoots: [], defaultPluginRoot: '',
     writable: false, browserSupported: false, configPath: '',
     browserSidebar: { ...defaultBrowserSidebar },
-    favicons: {}, theme: null,
+    theme: null,
   })
 }
 export function emptySession(entry: WebEntry): WebSessionState {
@@ -93,4 +108,71 @@ export function errorText(error: unknown): string {
 export function hideWebSurface(): Promise<unknown> {
   if (!getDesktopApi()) return Promise.resolve()
   return hostCommand('web_show', { entryId: null, bounds: { x: 0, y: 0, width: 1, height: 1 }, visible: false })
+}
+
+export interface OverlayShowOptions {
+  mode: 'settings' | 'add' | 'edit' | 'preparations' | 'help'
+  entryId?: string
+  confirmRemove?: boolean
+}
+export interface OverlayRequest extends OverlayShowOptions { requestId: number }
+let overlaySequence = 0
+let overlayBusy = false
+let overlayActive = false
+let overlayListener: Promise<unknown> | undefined
+let overlayTrigger: HTMLElement | null = null
+
+export async function showOverlay(options: OverlayShowOptions): Promise<boolean> {
+  const api = getDesktopApi()
+  if (!api) return false
+  // All callers share this lock, including plugin help and the main shell.
+  if (overlayBusy || overlayActive) return true
+  overlayBusy = true
+  const requestId = ++overlaySequence
+  let unlisten: (() => void) | undefined
+  let timeout: ReturnType<typeof setTimeout> | undefined
+  let expired = false
+  overlayTrigger = document.activeElement instanceof HTMLElement ? document.activeElement : null
+  try {
+    const operation = async () => {
+      if (!await hostCommand<boolean>('overlay_supported')) return false
+      if (expired) throw new Error('悬浮层请求已过期')
+      overlayListener ??= api.event.listen<boolean>('overlay-active', ({ payload }) => {
+        overlayActive = payload
+        if (!payload) requestAnimationFrame(() => { if (overlayTrigger?.isConnected) overlayTrigger.focus() })
+      }).catch(cause => { overlayListener = undefined; throw cause })
+      await overlayListener
+      while (!await hostCommand<boolean>('overlay_ready')) {
+        if (expired) throw new Error('悬浮层初始化超时')
+        await new Promise(resolve => setTimeout(resolve, 50))
+      }
+      if (expired) throw new Error('悬浮层请求已过期')
+      let confirmPresented: () => void = () => {}
+      const presented = new Promise<void>(resolve => { confirmPresented = resolve })
+      const dispose = await api.event.listen<number>('overlay-presented', ({ payload }) => {
+        if (!expired && payload === requestId) confirmPresented()
+      })
+      if (expired) { dispose(); throw new Error('悬浮层请求已过期') }
+      unlisten = dispose
+      await hostCommand('overlay_show', { request: { ...options, requestId } })
+      await presented
+      return true
+    }
+    const shown = await Promise.race([
+      operation(),
+      new Promise<never>((_, reject) => { timeout = setTimeout(() => { expired = true; reject(new Error('悬浮层呈现超时')) }, 5000) }),
+    ])
+    overlayActive = shown
+    return shown
+  } catch (cause) {
+    expired = true
+    await hostCommand('overlay_hide', { requestId }).catch(() => {})
+    overlayActive = false
+    console.warn('Overlay unavailable; opening local dialog:', cause)
+    return false
+  } finally {
+    clearTimeout(timeout)
+    unlisten?.()
+    overlayBusy = false
+  }
 }

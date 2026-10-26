@@ -1,5 +1,6 @@
 // Windows-only, isolated native smoke checks. Never uses a real SSH configuration.
 import assert from 'node:assert/strict'
+import { connectHostTarget } from './lib/host-target.mjs'
 import { spawn } from 'node:child_process'
 import { createServer } from 'node:http'
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
@@ -26,12 +27,13 @@ async function port(directory) {
     if (item.isDirectory()) { const found = await port(file); if (found) return found }
   }
 }
-async function profile(directory, predicate) {
+async function profile(directory, predicate, label) {
   return until(async () => {
     const number = await port(directory)
     if (!number) return
     const targets = await (await fetch(`http://127.0.0.1:${number}/json/list`)).json()
-    const target = targets.find(t => t.type === 'page' && predicate(t))
+    if (label) return connectHostTarget(targets, label, Cdp)
+      const target = targets.find(t => t.type === 'page' && predicate(t))
     if (target) return new Cdp().connect(target.webSocketDebuggerUrl)
   }, `profile ${directory}`)
 }
@@ -57,13 +59,14 @@ const app = spawn(path.join(root, 'target/windows/debug/oriel.exe'), [], { env: 
 let diagnostics = ''
 app.stdout.on('data', bytes => diagnostics += bytes)
 app.stderr.on('data', bytes => diagnostics += bytes)
-let shell
+let shell, overlay
 const pages = []
 const passed = label => console.log(`PASS ${label}`)
 const host = (command, args = {}) => shell.evaluate(`window.__TAURI__.core.invoke(${JSON.stringify(command)},${JSON.stringify(args)})`)
 const show = id => host('web_show', { entryId: id, bounds: { x: 100, y: 150, width: 650, height: 400 }, visible: true })
 try {
-  shell = await profile(path.join(data, 'shell'), t => t.url.startsWith('http://127.0.0.1:1420'))
+  shell = await profile(path.join(data, 'shell'), undefined, 'main')
+  overlay = await profile(path.join(data, 'shell'), undefined, 'overlay')
   await until(() => host('workspace_snapshot'), 'main IPC')
   const ids = []
   for (const title of ['主题页面一', '主题页面二']) {
@@ -101,15 +104,19 @@ try {
   passed('successful v3 migration preserves local configuration as theme authority')
   await host('web_show', { entryId: null, bounds: { x: 0, y: 0, width: 1, height: 1 }, visible: false })
   await shell.evaluate('document.querySelector("button[aria-label=工作台设置]").click()')
-  await until(() => shell.evaluate('Boolean(document.querySelector(".settings-dialog[open]"))'), 'theme settings UI')
+  await until(() => overlay.evaluate('Boolean(document.querySelector(".settings-dialog[open]"))'), 'theme settings UI')
   for (const theme of ['light', 'dark']) {
     await host('workspace_theme', { theme })
+    await until(() => overlay.evaluate(`document.documentElement.dataset.theme===${JSON.stringify(theme)}`), 'overlay theme follows host')
     await until(() => shell.evaluate(`document.documentElement.dataset.theme===${JSON.stringify(theme)}`), 'main theme follows host')
-    const screenshot = await shell.command('Page.captureScreenshot', { format: 'png' })
+    const screenshot = await overlay.command('Page.captureScreenshot', { format: 'png' })
     await writeFile(path.join(data, `settings-${theme}.png`), Buffer.from(screenshot.data, 'base64'))
   }
-  passed('theme settings render in both themes; screenshots saved for review')
-  await shell.evaluate('document.querySelector(".settings-dialog[open] .dialog-heading button").click()')
+  await overlay.evaluate(`const select = Array.from(document.querySelectorAll('select')).find(s => Array.from(s.options).some(o => o.value === 'light')); select.value = 'light'; select.dispatchEvent(new Event('change', { bubbles: true }))`)
+  await until(() => shell.evaluate('document.documentElement.dataset.theme === "light"'), 'overlay change reaches main')
+  await until(() => overlay.evaluate('document.documentElement.dataset.theme === "light"'), 'overlay change reaches overlay')
+  passed('theme settings synchronize in both directions; overlay screenshots saved for review')
+  await overlay.evaluate('document.querySelector(".settings-dialog[open] .dialog-heading button").click()')
   await shell.evaluate('window.__TAURI__.window.getCurrentWindow().close()')
   await until(() => app.exitCode !== null, 'complete exit')
   passed('application completes exit')
@@ -122,5 +129,5 @@ try {
   if (app.exitCode === null) {
     try { await shell?.evaluate('window.__TAURI__.window.getCurrentWindow().close()'); await until(() => app.exitCode !== null, 'cleanup exit', 15000) } catch { app.kill() }
   }
-  shell?.close(); fixture.closeAllConnections(); fixture.close(); shellServer.closeAllConnections(); shellServer.close()
+  shell?.close(); overlay?.close(); fixture.closeAllConnections(); fixture.close(); shellServer.closeAllConnections(); shellServer.close()
 }

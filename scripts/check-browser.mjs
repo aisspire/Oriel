@@ -1,6 +1,7 @@
 // Windows native integration check. Uses Node's built-in CDP WebSocket support;
 // all browser/application data stays in a fresh directory under target/.
 import assert from 'node:assert/strict'
+import { connectHostTarget } from './lib/host-target.mjs'
 import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
 import { createServer } from 'node:http'
@@ -69,11 +70,12 @@ class Cdp {
   }
   close() { this.socket.close() }
 }
-async function connectProfile(directory, predicate) {
+async function connectProfile(directory, predicate, label) {
   return until(async () => {
     const port = await activePort(directory)
     if (!port) return
     const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()
+    if (label) return connectHostTarget(targets, label, Cdp)
     const target = targets.find(target => target.type === 'page' && predicate(target))
     if (target) return new Cdp().connect(target.webSocketDebuggerUrl)
   }, `debug target ${directory}`)
@@ -158,7 +160,7 @@ async function closeForWindowState(connection) {
 async function restartForWindowState() {
   app = spawn(executable, [], appOptions)
   app.stderr.on('data', data => { nativeErrors += data })
-  const connection = await connectProfile(join(data, 'shell'), target => target.url.startsWith('http://127.0.0.1:1420'))
+  const connection = await connectProfile(join(data, 'shell'), undefined, 'main')
   connections.push(connection)
   await until(() => connection.evaluate(`Boolean(document.querySelector('button[aria-label="最大化"],button[aria-label="还原窗口"]'))`), 'restored window controls')
   return connection
@@ -167,8 +169,10 @@ async function restartForWindowState() {
 let exitCode = 0
 let passwordSaveAndFill = 'requires manual acceptance'
 try {
-  const shell = await connectProfile(join(data, 'shell'), target => target.url.startsWith('http://127.0.0.1:1420'))
+  const shell = await connectProfile(join(data, 'shell'), undefined, 'main')
   connections.push(shell)
+  const overlay = await connectProfile(join(data, 'shell'), undefined, 'overlay')
+  connections.push(overlay)
   const invoke = (command, args = {}) => shell.evaluate(`window.__TAURI__.core.invoke(${JSON.stringify(command)}, ${JSON.stringify(args)})`)
   const click = async label => {
     await until(() => shell.evaluate(`(() => { const button = document.querySelector('button[aria-label=${JSON.stringify(label)}]'); return button && !button.disabled })()`), `enabled button ${label}`)
@@ -190,9 +194,9 @@ try {
   assert.equal(await shell.evaluate(`document.querySelectorAll('.web-surface').length`), 0)
   passed('browser starts with a fixed-page empty state and preserves the legacy file until saving')
   await click('添加网页')
-  await until(() => shell.evaluate(`Boolean(document.querySelector('dialog[open] input'))`), 'add webpage dialog')
-  await shell.evaluate(`(() => { const inputs = document.querySelectorAll('dialog[open] input'); inputs[0].value='Native fixture'; inputs[0].dispatchEvent(new Event('input',{bubbles:true})); inputs[1].value=${JSON.stringify(`${fixtureUrl}/start`)}; inputs[1].dispatchEvent(new Event('input',{bubbles:true})); document.querySelector('dialog[open] form').requestSubmit(); })()`)
-  await until(() => shell.evaluate(`!document.querySelector('dialog[open]') && Boolean(document.querySelector('button[aria-label="Native fixture"]'))`), 'saved webpage navigation')
+  await until(() => overlay.evaluate(`Boolean(document.querySelector('dialog[open] input'))`), 'add webpage dialog')
+  await overlay.evaluate(`(() => { const inputs = document.querySelectorAll('dialog[open] input'); inputs[0].value='Native fixture'; inputs[0].dispatchEvent(new Event('input',{bubbles:true})); inputs[1].value=${JSON.stringify(`${fixtureUrl}/start`)}; inputs[1].dispatchEvent(new Event('input',{bubbles:true})); document.querySelector('dialog[open] form').requestSubmit(); })()`)
+  await until(() => shell.evaluate(`Boolean(document.querySelector('button[aria-label="Native fixture"]'))`), 'saved webpage navigation')
   workspace = await invoke('workspace_snapshot')
   const entry = workspace.entries.find(entry => entry.title === 'Native fixture')
   assert(entry?.editable)
@@ -202,6 +206,7 @@ try {
   assert.equal(JSON.parse(await readFile(join(data, 'workspace.json'), 'utf8')).version, 4)
   assert.equal(await shell.evaluate(`document.querySelectorAll('.primary-nav .site-monogram').length`), 0)
   assert.equal(await shell.evaluate(`document.querySelectorAll('.fixed-page').length`), 1)
+  await until(() => overlay.evaluate('!document.querySelector("dialog[open]")'), 'add overlay closed')
   passed('webpage creation through UI and native rendering')
 
   const instanceToken = await page.evaluate('window.layoutInstanceToken = Math.random().toString(36)')
@@ -253,12 +258,13 @@ try {
   passed('native back, forward, reload and SPA address synchronization')
 
   await click('网页设置')
-  await until(() => shell.evaluate(`Boolean(document.querySelector('dialog[open] input'))`), 'edit webpage dialog')
-  await shell.evaluate(`(() => { const input = document.querySelector('dialog[open] input'); input.value='Native fixture renamed'; input.dispatchEvent(new Event('input',{bubbles:true})); document.querySelector('dialog[open] form').requestSubmit() })()`)
+  await until(() => overlay.evaluate(`Boolean(document.querySelector('dialog[open] input'))`), 'edit webpage dialog')
+  await overlay.evaluate(`(() => { const input = document.querySelector('dialog[open] input'); input.value='Native fixture renamed'; input.dispatchEvent(new Event('input',{bubbles:true})); document.querySelector('dialog[open] form').requestSubmit() })()`)
   entry.title = 'Native fixture renamed'
-  await until(() => shell.evaluate(`Boolean(document.querySelector('button[aria-label="Native fixture renamed"]')) && !document.querySelector('dialog[open]')`), 'renamed entry')
+  await until(() => shell.evaluate(`Boolean(document.querySelector('button[aria-label="Native fixture renamed"]'))`), 'renamed entry')
   assert.equal((await invoke('workspace_snapshot')).entries.find(item => item.id === entry.id).title, entry.title)
   assert.equal(await page.evaluate('location.pathname'), '/spa')
+  await until(() => overlay.evaluate('!document.querySelector("dialog[open]")'), 'edit overlay closed')
   passed('webpage editing preserves identity and the current page')
 
   await invoke('web_navigate', { entryId: entry.id, url: `${fixtureUrl}/login` })
@@ -444,10 +450,10 @@ try {
   await click('Separate profile的菜单')
   await until(() => shell.evaluate(`Boolean(document.querySelector('.page-actions[open]'))`), 'background removal menu')
   await shell.evaluate(`Array.from(document.querySelectorAll('.page-actions button')).find(button => button.textContent === '移除网页').click()`)
-  await until(() => shell.evaluate(`Boolean(document.querySelector('.delete-confirmation .danger'))`), 'delete confirmation')
-  assert.equal(await shell.evaluate(`document.querySelector('dialog[open] input').value`), 'Separate profile')
-  await shell.evaluate(`document.querySelector('.delete-confirmation .danger').click()`)
-  await until(() => shell.evaluate(`!document.querySelector('button[aria-label="Separate profile"]') && !document.querySelector('dialog[open]')`), 'deleted entry')
+  await until(() => overlay.evaluate(`Boolean(document.querySelector('.delete-confirmation .danger'))`), 'delete confirmation')
+  assert.equal(await overlay.evaluate(`document.querySelector('dialog[open] input').value`), 'Separate profile')
+  await overlay.evaluate(`document.querySelector('.delete-confirmation .danger').click()`)
+  await until(() => shell.evaluate(`!document.querySelector('button[aria-label="Separate profile"]')`), 'deleted entry')
   assert(!(await invoke('workspace_snapshot')).entries.some(item => item.id === secondEntry.id))
   assert.equal(await shell.evaluate(`document.querySelector('.fixed-page.is-active .fixed-page-button').getAttribute('aria-label')`), entry.title)
   await readFile(join(data, 'web-profiles', secondEntry.id, 'EBWebView', 'Local State'))

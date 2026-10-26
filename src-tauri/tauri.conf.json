@@ -26,6 +26,22 @@
         "dragDropEnabled": false,
         "shadow": true,
         "backgroundColor": "#eeedf1"
+      },
+      {
+        "label": "overlay",
+        "title": "Oriel Overlay",
+        "width": 1100,
+        "height": 760,
+        "minWidth": 480,
+        "minHeight": 600,
+        "center": true,
+        "visible": false,
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "skipTaskbar": true,
+        "dragDropEnabled": false,
+        "url": "index.html?overlay=1"
       }
     ],
     "security": {

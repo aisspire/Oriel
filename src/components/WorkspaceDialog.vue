@@ -41,6 +41,8 @@ const autoSuggestedHost = ref('')
 
 const isLightweightRemove = computed(() => Boolean(props.confirmRemove && props.entry))
 
+function requestClose() { if (!busy.value) emit('close') }
+
 function openPreparations() {
   dialog.value?.close()
   preparationPanel.value = true
@@ -155,6 +157,7 @@ async function save(remove = false) {
         replacePreparation: true,
       })
     }
+    busy.value = false
     emit('saved', result)
     emit('close')
   } catch (cause) {
@@ -196,14 +199,14 @@ onUnmounted(() => dialog.value?.close())
     ref="dialog"
     class="settings-dialog workspace-dialog"
     aria-labelledby="workspace-dialog-title"
-    @cancel="busy ? $event.preventDefault() : emit('close')"
+    @cancel.prevent="requestClose"
   >
     <form class="dialog-form" @submit.prevent="handleSubmit">
       <header class="dialog-heading">
         <h1 id="workspace-dialog-title">
           {{ isLightweightRemove ? '移除网页' : mode === 'settings' ? '工作台设置' : mode === 'edit' ? '编辑网页' : '添加网页' }}
         </h1>
-        <button class="plain-icon" type="button" aria-label="关闭" :disabled="busy" @click="emit('close')">
+        <button class="plain-icon" type="button" aria-label="关闭" :disabled="busy" @click="requestClose">
           <AppIcon name="close" />
         </button>
       </header>
@@ -217,7 +220,7 @@ onUnmounted(() => dialog.value?.close())
               确定要移除网页「{{ entry?.title || '未命名网页' }}」并停止其托管的前置程序吗？已保存的密码和浏览数据将保留。
             </p>
             <div class="delete-actions">
-              <button class="text-button" type="button" :disabled="busy" @click="emit('close')">取消</button>
+              <button class="text-button" type="button" :disabled="busy" @click="requestClose">取消</button>
               <button class="text-button danger" type="button" :disabled="busy" @click="save(true)">确认移除</button>
             </div>
           </div>
@@ -332,7 +335,7 @@ onUnmounted(() => dialog.value?.close())
         >
           移除网页
         </button>
-        <button class="text-button" type="button" :disabled="busy" @click="emit('close')">取消</button>
+        <button class="text-button" type="button" :disabled="busy" @click="requestClose">取消</button>
         <button
           class="primary-button"
           type="submit"

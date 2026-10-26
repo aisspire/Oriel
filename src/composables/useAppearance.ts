@@ -1,6 +1,6 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { getDesktopApi, syncDesktopIcon } from '../lib/desktop'
-import { errorText, hostCommand } from '../lib/workspace'
+import { errorText, hostCommand, loadWorkspace } from '../lib/workspace'
 
 type Theme = 'light' | 'dark'
 interface ThemeResult { theme: Theme; diagnostics: string[]; persisted: boolean }
@@ -14,7 +14,7 @@ function readTheme(): Theme {
   }
 }
 
-export function useAppearance() {
+export function useAppearance(options: { readOnlyInitialization?: boolean } = {}) {
   const desktop = Boolean(getDesktopApi())
   const theme = ref<Theme>(desktop ? 'light' : readTheme())
   const appearanceError = ref('')
@@ -22,6 +22,7 @@ export function useAppearance() {
   let initialized = !desktop
   let desired: Theme | null = null
   let intent = 0
+  let themeRevision = 0
   let unlisten: (() => void) | undefined
   let alive = true
   const iconSource = computed(() => theme.value === 'dark' ? '/oriel-icon.svg' : '/oriel-icon-light.svg')
@@ -40,6 +41,7 @@ export function useAppearance() {
   }
 
   function setTheme(value: Theme) {
+    ++themeRevision
     theme.value = value
     if (!desktop) return
     desired = value
@@ -77,13 +79,20 @@ export function useAppearance() {
     if (api) {
       try {
         const dispose = await api.event.listen<ThemeResult>('workspace-theme', ({ payload }) => {
-          if (alive && (desired === null || desired === payload.theme)) {theme.value = payload.theme; appearanceError.value = payload.diagnostics.join('；')}
+          if (alive && (desired === null || desired === payload.theme)) {++themeRevision; theme.value = payload.theme; appearanceError.value = payload.diagnostics.join('；')}
         })
         if (alive) unlisten = dispose
         else dispose()
       } catch (error) {appearanceError.value = errorText(error)}
     }
-    if (desktop) {
+    if (desktop && options.readOnlyInitialization) {
+      try {
+        const revision = themeRevision
+        const snapshot = await loadWorkspace()
+        if (snapshot.theme) calibrateTheme(snapshot.theme, revision)
+      } catch (error) { appearanceError.value = errorText(error) }
+      finally { initialized = true }
+    } else if (desktop) {
       try {
         const result = await hostCommand<ThemeResult>('workspace_theme', { legacy: readTheme() })
         if (desired === null) theme.value = result.theme; appearanceError.value = result.diagnostics.join('；')
@@ -99,5 +108,8 @@ export function useAppearance() {
     document.removeEventListener('visibilitychange', syncVisibility)
   })
 
-  return { theme, iconSource, reducedMotion, paused, motionPaused, toggleTheme, setTheme, appearanceError }
+  function getThemeRevision() { return themeRevision }
+  function calibrateTheme(value: Theme, revision = themeRevision) { if (desired === null && revision === themeRevision) theme.value = value }
+
+  return { getThemeRevision, calibrateTheme, theme, iconSource, reducedMotion, paused, motionPaused, toggleTheme, setTheme, appearanceError }
 }

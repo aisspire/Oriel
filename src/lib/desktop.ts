@@ -13,7 +13,10 @@ interface DesktopWindow {
 interface TauriWindow extends Window {
   __TAURI__?: {
     core: { invoke: <T>(command: string, args?: Record<string, unknown>) => Promise<T> }
-    event: { listen: <T>(event: string, handler: (event: { payload: T }) => void) => Promise<() => void> }
+    event: {
+      listen: <T>(event: string, handler: (event: { payload: T }) => void) => Promise<() => void>
+      emitTo: (target: string, event: string, payload?: unknown) => Promise<void>
+    }
     window: { getCurrentWindow(): DesktopWindow }
     image: { Image: { new: (rgba: number[], width: number, height: number) => Promise<DesktopImage> } }
   }

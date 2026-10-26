@@ -1,5 +1,5 @@
 //! Per-page preparation commands. Tool business state stays with the called tool.
-use crate::{normalize_url, Result};
+use crate::{normalize_url, unique_id, Result};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, VecDeque},
@@ -604,30 +604,157 @@ impl Preparations {
         ids.iter().filter_map(|id| self.stop(id).err()).collect()
     }
 }
+struct TempFileGuard(PathBuf);
+impl Drop for TempFileGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+enum FileResult {
+    Ready(Option<String>),
+    Failure(String),
+    Pending,
+}
+
+fn poll_result_file(path: &Path, child_exited: bool) -> FileResult {
+    match std::fs::metadata(path) {
+        Ok(meta) => {
+            let len = meta.len();
+            if len == 0 {
+                return FileResult::Pending;
+            }
+            if len > 65536 {
+                return FileResult::Failure("结果文件须为不超过 64 KiB 的 UTF-8 JSON。".into());
+            }
+            match std::fs::read(path) {
+                Ok(bytes) => match serde_json::from_slice::<PreparationResult>(&bytes) {
+                    Ok(val) => {
+                        if val.kind != "result" {
+                            FileResult::Failure("前置程序只接受 type=result 的准备结果。".into())
+                        } else if !val.success {
+                            FileResult::Failure(
+                                val.error
+                                    .filter(|s| !s.trim().is_empty())
+                                    .unwrap_or_else(|| "前置程序报告失败。".into()),
+                            )
+                        } else if val.error.is_some() {
+                            FileResult::Failure("成功结果不能同时包含失败原因。".into())
+                        } else {
+                            match val.url.map(|u| normalize_url(&u)).transpose() {
+                                Ok(url) => FileResult::Ready(url),
+                                Err(e) => FileResult::Failure(e),
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        if child_exited {
+                            FileResult::Failure(format!("前置程序结果不是有效的 UTF-8 JSON：{e}"))
+                        } else {
+                            FileResult::Pending
+                        }
+                    }
+                },
+                Err(e) => {
+                    if child_exited {
+                        FileResult::Failure(format!("读取结果文件失败：{e}"))
+                    } else {
+                        FileResult::Pending
+                    }
+                }
+            }
+        }
+        Err(_) => FileResult::Pending,
+    }
+}
+
+enum StdoutOutcome {
+    Success(Option<String>),
+    ExplicitFailure(String),
+    Noise(String),
+}
+
+fn parse_stdout_line(line: &[u8]) -> StdoutOutcome {
+    match serde_json::from_slice::<PreparationResult>(line) {
+        Ok(value) => {
+            if value.kind != "result" {
+                StdoutOutcome::Noise("前置程序只接受 type=result 的准备结果。".into())
+            } else if !value.success {
+                StdoutOutcome::ExplicitFailure(
+                    value
+                        .error
+                        .filter(|s| !s.trim().is_empty())
+                        .unwrap_or_else(|| "前置程序报告失败。".into()),
+                )
+            } else if value.error.is_some() {
+                StdoutOutcome::ExplicitFailure("成功结果不能同时包含失败原因。".into())
+            } else {
+                match value.url.map(|url| normalize_url(&url)).transpose() {
+                    Ok(url) => StdoutOutcome::Success(url),
+                    Err(e) => StdoutOutcome::ExplicitFailure(e),
+                }
+            }
+        }
+        Err(e) => StdoutOutcome::Noise(format!("前置程序结果不是有效的 UTF-8 JSON：{e}")),
+    }
+}
+
 enum Output {
     Line(Vec<u8>),
     End,
-    Error(String),
+    ProtocolError(String),
+    ReadError(String),
 }
-fn read_results(output: impl Read + Send + 'static, sender: mpsc::SyncSender<Output>) {
+fn read_results(
+    output: impl Read + Send + 'static,
+    sender: mpsc::SyncSender<Output>,
+    log_run: Arc<Run>,
+) {
     thread::spawn(move || {
         let mut reader = BufReader::new(output);
+        let mut candidate = Vec::new();
+        let mut oversized = false;
         loop {
-            let mut line = Vec::new();
-            match reader.by_ref().take(65537).read_until(b'\n', &mut line) {
+            // Log fragments independently of protocol framing; a noisy process must
+            // never lose its stdout reader or block on a full OS pipe.
+            let mut fragment = Vec::new();
+            match reader.by_ref().take(4096).read_until(b'\n', &mut fragment) {
                 Ok(0) => {
+                    if oversized || !candidate.is_empty() {
+                        let _ = sender.send(Output::ProtocolError(
+                            "结果须为不超过 64 KiB、以换行结束的 UTF-8 JSON。".into(),
+                        ));
+                    }
                     let _ = sender.send(Output::End);
                     break;
                 }
-                Ok(_) if line.len() <= 65536 && line.ends_with(b"\n") => {
-                    if sender.send(Output::Line(line)).is_err() {
-                        break;
+                Ok(_) => {
+                    log_run.log(String::from_utf8_lossy(&fragment).trim_end().to_owned());
+                    if !oversized {
+                        if candidate.len() + fragment.len() <= 65536 {
+                            candidate.extend_from_slice(&fragment);
+                        } else {
+                            candidate.clear();
+                            oversized = true;
+                        }
+                    }
+                    if fragment.ends_with(b"\n") {
+                        let output = if oversized {
+                            Output::ProtocolError("结果须为不超过 64 KiB 的 UTF-8 JSON 行。".into())
+                        } else {
+                            Output::Line(std::mem::take(&mut candidate))
+                        };
+                        oversized = false;
+                        if sender.send(output).is_err() {
+                            break;
+                        }
                     }
                 }
-                _ => {
-                    let _ = sender.send(Output::Error(
-                        "结果须为不超过 64 KiB、以换行结束的 UTF-8 JSON。".into(),
-                    ));
+                Err(error) => {
+                    if !fragment.is_empty() {
+                        log_run.log(String::from_utf8_lossy(&fragment).trim_end().to_owned());
+                    }
+                    let _ = sender.send(Output::ReadError(format!("读取 stdout 失败：{error}")));
                     break;
                 }
             }
@@ -643,9 +770,16 @@ fn execute(run: Arc<Run>, launcher: Launcher) {
         run.changed.notify_all();
         return;
     }
+    let result_file = std::env::temp_dir().join(format!(
+        "oriel-prep-{}-{}.json",
+        unique_id(),
+        run.view.lock().unwrap().generation
+    ));
+    let _guard = TempFileGuard(result_file.clone());
     let spawn = run.spec.command().and_then(|mut command| {
         // Always set it, including the empty value, so inherited context cannot leak.
         command.env("ORIEL_PAGE_URL", run.page_url.as_deref().unwrap_or(""));
+        command.env("ORIEL_RESULT_FILE", &result_file);
         launcher(&mut command)
     });
     let mut process = match spawn {
@@ -659,7 +793,7 @@ fn execute(run: Arc<Run>, launcher: Launcher) {
             return;
         }
     };
-    let (sender, receiver) = mpsc::sync_channel(8);
+    let (sender, receiver) = mpsc::sync_channel(64);
     read_results(
         process
             .child
@@ -667,6 +801,7 @@ fn execute(run: Arc<Run>, launcher: Launcher) {
             .take()
             .expect("launcher must preserve stdout"),
         sender,
+        run.clone(),
     );
     let log_run = run.clone();
     let stderr = process
@@ -684,8 +819,17 @@ fn execute(run: Arc<Run>, launcher: Launcher) {
             }
         }
     });
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Track {
+        File,
+        Stdout,
+    }
+
     let deadline = Instant::now() + Duration::from_secs(run.spec.timeout_seconds);
-    let mut result = None;
+    let mut result: Option<Option<String>> = None;
+    let mut resolved_track: Option<Track> = None;
+    let mut pending_stdout_error: Option<String> = None;
     let mut ended = false;
     let mut failure = None;
     let mut completed = false;
@@ -693,28 +837,77 @@ fn execute(run: Arc<Run>, launcher: Launcher) {
         if run.cancel.load(Ordering::SeqCst) {
             break;
         }
-        // Bounded channel and bounded batch prevent stdout from starving cancellation.
-        for _ in 0..8 {
+
+        // 优先检测新信道（临时结果文件）
+        if result.is_none() {
+            match poll_result_file(&result_file, false) {
+                FileResult::Ready(url) => {
+                    result = Some(url);
+                    resolved_track = Some(Track::File);
+                    pending_stdout_error = None;
+                }
+                FileResult::Failure(e) => {
+                    failure = Some(e);
+                    break;
+                }
+                FileResult::Pending => {}
+            }
+        }
+
+        // 消费旧信道（stdout），单批次有界读取防止饿死
+        for _ in 0..64 {
             match receiver.try_recv() {
                 Ok(Output::Line(line)) => {
-                    if result.is_some() {
-                        failure = Some("前置程序重复返回准备结果。".into());
-                        break;
+                    if resolved_track == Some(Track::File) {
+                        // 新信道已就绪：stdout 作为普通日志已记录，直接忽略结果解析
+                        continue;
                     }
-                    match parse_result(&line) {
-                        Ok(url) => result = Some(url),
-                        Err(e) => {
+                    if result.is_some() {
+                        // 旧信道之前已经产出了结果，检查是否为重复结果
+                        if parse_result(&line).is_ok() {
+                            failure = Some("前置程序重复返回准备结果。".into());
+                            break;
+                        }
+                        continue;
+                    }
+                    match parse_stdout_line(&line) {
+                        StdoutOutcome::Success(url) => {
+                            result = Some(url);
+                            resolved_track = Some(Track::Stdout);
+                            pending_stdout_error = None;
+                        }
+                        StdoutOutcome::ExplicitFailure(e) => {
                             failure = Some(e);
                             break;
+                        }
+                        StdoutOutcome::Noise(e) => {
+                            if pending_stdout_error.is_none() {
+                                pending_stdout_error = Some(e);
+                            }
                         }
                     }
                 }
                 Ok(Output::End) => ended = true,
-                Ok(Output::Error(e)) => {
-                    failure = Some(e);
+                Ok(Output::ProtocolError(e)) => {
+                    if resolved_track != Some(Track::File) && pending_stdout_error.is_none() {
+                        pending_stdout_error = Some(e);
+                    }
+                }
+                Ok(Output::ReadError(e)) => {
+                    ended = true;
+                    if resolved_track == Some(Track::Stdout) {
+                        failure = Some(e);
+                        break;
+                    }
+                    if resolved_track.is_none() {
+                        pending_stdout_error = Some(e);
+                    }
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    ended = true;
                     break;
                 }
-                Err(_) => break,
+                Err(mpsc::TryRecvError::Empty) => break,
             }
         }
         if failure.is_some() {
@@ -723,6 +916,23 @@ fn execute(run: Arc<Run>, launcher: Launcher) {
         match process.child.try_wait() {
             Ok(Some(status)) => {
                 run.view.lock().unwrap().exit_code = status.code();
+
+                // 进程已退出，再次检查临时文件
+                if result.is_none() {
+                    match poll_result_file(&result_file, true) {
+                        FileResult::Ready(url) => {
+                            result = Some(url);
+                            resolved_track = Some(Track::File);
+                            pending_stdout_error = None;
+                        }
+                        FileResult::Failure(e) => {
+                            failure = Some(e);
+                            break;
+                        }
+                        FileResult::Pending => {}
+                    }
+                }
+
                 if run.spec.mode == Mode::Persistent {
                     failure = Some(format!("持续程序已退出（{status}）。"));
                     break;
@@ -731,9 +941,11 @@ fn execute(run: Arc<Run>, launcher: Launcher) {
                     failure = Some(format!("前置程序异常退出（{status}）。"));
                     break;
                 }
-                if ended {
+                if ended || resolved_track == Some(Track::File) {
                     if result.is_some() {
                         completed = true;
+                    } else if let Some(e) = pending_stdout_error.take() {
+                        failure = Some(e);
                     } else {
                         failure = Some("前置程序退出但未返回准备结果。".into());
                     }
@@ -1197,5 +1409,103 @@ mod tests {
         assert!(target.preparation_error.is_some());
         assert_eq!(target.url, "http://127.0.0.1:18080/");
         assert_eq!(manager.views()[0].state, State::Failed);
+    }
+    #[test]
+    fn file_track_resolves_and_cleans_temporary_file() {
+        let temp = Temp::new();
+        let manager = Preparations::default();
+        let marker = temp.0.join("file-env");
+        let p = fixture("file-env", &marker);
+        let outcome = manager.prepare("p", "p", p, false, launch).unwrap();
+        assert_eq!(outcome.url.as_deref(), Some("http://127.0.0.1:18080/"));
+        let recorded_file = fs::read_to_string(marker.with_extension("file")).unwrap();
+        assert!(!recorded_file.trim().is_empty());
+        // Verify the temporary result file is cleaned up after preparation finishes
+        until(|| !Path::new(recorded_file.trim()).exists());
+    }
+    #[test]
+    fn dual_track_isolates_stdout_pollution_and_captures_logs() {
+        let temp = Temp::new();
+        let manager = Preparations::default();
+        let marker = temp.0.join("file-pollution");
+        let p = fixture("file-with-stdout-pollution", &marker);
+        let outcome = manager.prepare("p", "p", p, false, launch).unwrap();
+        assert_eq!(outcome.url.as_deref(), Some("http://127.0.0.1:18080/"));
+        let view = manager.views().remove(0);
+        assert!(view.cleaned);
+        // Verify stdout lines are cleanly routed into logs ring buffer rather than corrupting preparation
+        let logs: Vec<_> = view.logs.into_iter().collect();
+        assert!(logs.iter().any(|l| l.contains("stdout header line 1")));
+        assert!(logs.iter().any(|l| l.contains("stdout header line 2")));
+        assert!(logs.iter().any(|l| l.contains("stdout trailing line 3")));
+        let recorded_file = fs::read_to_string(marker.with_extension("file")).unwrap();
+        until(|| !Path::new(recorded_file.trim()).exists());
+    }
+    #[test]
+    fn file_results_accept_unframed_and_large_stdout_and_keep_draining() {
+        for scenario in [
+            "file-partial",
+            "file-large",
+            "file-persistent",
+            "file-held-stdout",
+        ] {
+            let temp = Temp::new();
+            let manager = Preparations::default();
+            let marker = temp.0.join(scenario);
+            let mut spec = fixture(scenario, &marker);
+            if scenario == "file-persistent" {
+                spec.mode = Mode::Persistent;
+            }
+            let outcome = manager.prepare("p", "p", spec, false, launch).unwrap();
+            assert_eq!(outcome.url.as_deref(), Some("http://127.0.0.1:18080/"));
+            if scenario != "file-held-stdout" {
+                until(|| {
+                    manager.views()[0]
+                        .logs
+                        .iter()
+                        .any(|l| l.contains("tail-fragment"))
+                });
+            }
+            if scenario == "file-persistent" {
+                until(|| {
+                    manager.views()[0]
+                        .logs
+                        .iter()
+                        .any(|l| l.contains("still-running"))
+                });
+                assert_eq!(manager.views()[0].state, State::Ready);
+                manager.stop("p").unwrap();
+            }
+            assert!(manager.views()[0].cleaned);
+            let file = fs::read_to_string(marker.with_extension("file")).unwrap();
+            until(|| !Path::new(file.trim()).exists());
+        }
+    }
+    #[test]
+    fn stdout_protocol_can_follow_an_oversized_log() {
+        let temp = Temp::new();
+        let manager = Preparations::default();
+        manager
+            .prepare(
+                "p",
+                "p",
+                fixture("large-then-result", &temp.0.join("log")),
+                false,
+                launch,
+            )
+            .unwrap();
+        assert_eq!(manager.views()[0].state, State::Completed);
+    }
+    #[test]
+    fn file_track_failure_reports_custom_error() {
+        let temp = Temp::new();
+        let manager = Preparations::default();
+        let marker = temp.0.join("file-fail");
+        let p = fixture("file-failure", &marker);
+        let err = manager.prepare("p", "p", p, false, launch).unwrap_err();
+        assert!(err.contains("fixture file failed"), "got: {err}");
+        let view = manager.views().remove(0);
+        assert_eq!(view.state, State::Failed);
+        assert!(view.cleaned);
     }
 }

@@ -1,10 +1,11 @@
 {
   "identifier": "main-window",
-  "description": "仅允许本地 main WebView 执行窗口操作与接入管理；外部网页不继承宿主权限。",
-  "webviews": ["main"],
+  "description": "仅允许本地 main 和 overlay WebView 执行窗口操作与接入管理；外部网页不继承宿主权限。",
+  "webviews": ["main", "overlay"],
   "permissions": [
     "core:event:allow-listen",
     "core:event:allow-unlisten",
+    "core:event:allow-emit-to",
     "core:window:allow-minimize",
     "core:window:allow-toggle-maximize",
     "core:window:allow-internal-toggle-maximize",

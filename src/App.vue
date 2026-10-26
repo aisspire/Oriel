@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch, nextTick } from 'vue'
 import AppIcon from './components/AppIcon.vue'
 import SiteIcon from './components/SiteIcon.vue'
 import OrielShowcase from './components/OrielShowcase.vue'
@@ -8,11 +8,13 @@ import WorkspaceDialog from './components/WorkspaceDialog.vue'
 import PreparationPanel from './components/PreparationPanel.vue'
 import { useAppearance } from './composables/useAppearance'
 import { getDesktopApi } from './lib/desktop'
+import { reconcileFavicons, setCachedFavicon } from './lib/favicons'
 import { resolvePluginView } from './lib/pluginViews'
-import { errorText, hideWebSurface, hostCommand, loadWorkspace, type WebEntry, type WorkspaceSnapshot } from './lib/workspace'
+import { errorText, getSlots, hideWebSurface, hostCommand, loadWorkspace, showOverlay, type WebEntry, type WorkspaceSnapshot } from './lib/workspace'
 
 const { theme, iconSource, reducedMotion, paused, motionPaused, toggleTheme, setTheme, appearanceError } = useAppearance()
 const workspace = ref<WorkspaceSnapshot>()
+watch(() => workspace.value?.entries, entries => reconcileFavicons(entries ?? []), { flush: 'sync' })
 const selectedId = ref('home')
 const browserSelectedId = ref('')
 const current = computed(() => workspace.value?.entries.find(e => e.id === selectedId.value))
@@ -23,15 +25,36 @@ const confirmRemove = ref(false)
 const openingDialog = ref(false)
 const preparationPanel = ref(false)
 const preparationEntryId = ref<string>()
+const overlayActive = ref(false)
+
+let dialogTrigger: HTMLElement | null = null
+function rememberTrigger() { dialogTrigger = document.activeElement instanceof HTMLElement ? document.activeElement : null }
+async function closeDialog() {
+  modal.value = null
+  preparationPanel.value = false
+  await nextTick()
+  if (dialogTrigger?.isConnected) dialogTrigger.focus()
+}
 async function openPreparations(entryId?: string) {
-  if (modal.value || preparationPanel.value || !desktop) return
-  preparationPanel.value = true; preparationEntryId.value = entryId
-  try { await hideWebSurface() } catch (cause) { error.value = errorText(cause); preparationPanel.value = false }
+  if (modal.value || preparationPanel.value || openingDialog.value || overlayActive.value) return
+  rememberTrigger()
+  openingDialog.value = true
+  try {
+    if (desktop && await showOverlay({ mode: 'preparations', entryId })) return
+    preparationPanel.value = true
+    preparationEntryId.value = entryId
+    await hideWebSurface()
+  } catch (cause) {
+    error.value = errorText(cause)
+    preparationPanel.value = false
+  } finally { openingDialog.value = false }
 }
 const error = ref('')
 const reloading = ref(false)
 const desktop = Boolean(getDesktopApi())
 let unlistenFavicon: (() => void) | undefined
+let unlistenSaved: (() => void) | undefined
+let unlistenOverlayActive: (() => void) | undefined
 let mounted = false
 
 async function reload(initial = false) {
@@ -44,24 +67,27 @@ async function reload(initial = false) {
   finally { reloading.value = false }
 }
 async function openDialog(mode: 'add' | 'edit' | 'settings', entry?: WebEntry, remove = false) {
-  if (modal.value || preparationPanel.value || openingDialog.value || !desktop) return
+  if (modal.value || preparationPanel.value || openingDialog.value || overlayActive.value) return
+  rememberTrigger()
   openingDialog.value = true
   try {
-    await hideWebSurface()
-    dialogEntry.value = entry
+    if (desktop && await showOverlay({ mode, entryId: entry?.id, confirmRemove: remove })) return
+    const snapshot = await loadWorkspace()
+    workspace.value = snapshot
+    const latest = snapshot.entries.find(e => e.id === entry?.id)
+    if (mode === 'edit' && (!latest || !latest.editable)) throw new Error('要编辑的网页已不存在或不可编辑。')
+    dialogEntry.value = latest
     confirmRemove.value = remove
     modal.value = mode
-  }
-  catch (cause) { error.value = errorText(cause) }
+    await hideWebSurface()
+  } catch (cause) { modal.value = null; error.value = errorText(cause) }
   finally { openingDialog.value = false }
 }
 function saved(snapshot: WorkspaceSnapshot) {
-  if (modal.value === 'add') {
-    const added = snapshot.entries.find(entry => entry.editable && !workspace.value?.entries.some(old => old.id === entry.id))
-    if (added) {
-      browserSelectedId.value = added.id
-      selectedId.value = snapshot.entries.find(entry => entry.kind === 'browser')?.id ?? 'home'
-    }
+  const added = snapshot.entries.find(entry => entry.editable && !workspace.value?.entries.some(old => old.id === entry.id))
+  if (added) {
+    browserSelectedId.value = added.id
+    selectedId.value = snapshot.entries.find(entry => entry.kind === 'browser')?.id ?? 'home'
   }
   workspace.value = snapshot
   if (selectedId.value !== 'home' && !current.value) selectedId.value = 'home'
@@ -76,14 +102,32 @@ onMounted(async () => {
     const dispose = await api.event.listen<{ entryId: string; registeredUrl: string; image: number[] }>('web-favicon', event => {
       const entry = workspace.value?.entries.find(entry => entry.id === event.payload.entryId)
       if (workspace.value && entry?.url === event.payload.registeredUrl) {
-        workspace.value.favicons = { ...workspace.value.favicons, [entry.id]: event.payload.image }
+        const b64 = btoa(event.payload.image.map(byte => String.fromCharCode(byte)).join(''))
+        setCachedFavicon({ entryId: entry.id, registeredUrl: event.payload.registeredUrl, dataUrl: `data:image/png;base64,${b64}` })
       }
     })
     if (mounted) unlistenFavicon = dispose
     else dispose()
+
+    const disposeSaved = await api.event.listen('workspace-saved', () => {
+      void loadWorkspace().then(snapshot => { if (mounted) saved(snapshot) }).catch(cause => { error.value = errorText(cause) })
+    })
+    if (mounted) unlistenSaved = disposeSaved
+    else disposeSaved()
+
+    const disposeOverlayActive = await api.event.listen<boolean>('overlay-active', event => {
+      if (mounted) overlayActive.value = Boolean(event.payload)
+    })
+    if (mounted) unlistenOverlayActive = disposeOverlayActive
+    else disposeOverlayActive()
   } catch { /* Icons can still use the cache or monogram. */ }
 })
-onUnmounted(() => { mounted = false; unlistenFavicon?.() })
+onUnmounted(() => {
+  mounted = false
+  unlistenFavicon?.()
+  unlistenSaved?.()
+  unlistenOverlayActive?.()
+})
 </script>
 
 <template>
@@ -103,7 +147,15 @@ onUnmounted(() => { mounted = false; unlistenFavicon?.() })
         >
           <AppIcon v-if="entry.kind === 'browser'" name="globe" />
           <AppIcon v-else-if="entry.pluginIcon" :name="entry.pluginIcon" />
-          <SiteIcon v-else class="site-monogram" :title="entry.title" :image="workspace?.favicons[entry.id]" />
+          <SiteIcon v-else class="site-monogram" :title="entry.title" :entry-id="entry.id" :registered-url="entry.url" />
+          <template v-for="slot in getSlots(entry, 'sidebar:badge')" :key="slot.id || slot.target">
+            <span
+              class="slot-badge"
+              :class="slot.badgeType ? `badge-${slot.badgeType}` : 'badge-dot'"
+              :title="slot.title || entry.title"
+              aria-hidden="true"
+            ></span>
+          </template>
         </button>
       </nav>
       <div class="sidebar-bottom">
@@ -124,12 +176,12 @@ onUnmounted(() => { mounted = false; unlistenFavicon?.() })
       </div>
       <component
         :is="resolvePluginView(current)" v-if="current && workspace" :entry="current" :workspace="workspace" :selected-id="browserSelectedId" :supported="workspace.browserSupported"
-        :writable="workspace.writable" :suspended="modal !== null || openingDialog || preparationPanel" @preparations="openPreparations" @edit="editEntry" @settings="openDialog('settings')" @add="openDialog('add')"
+        :writable="workspace.writable" :suspended="modal !== null || preparationPanel" @preparations="openPreparations" @edit="editEntry" @settings="openDialog('settings')" @add="openDialog('add')"
         @select="browserSelectedId = $event" @updated="saved"
       />
       <OrielShowcase v-else :paused="motionPaused" />
     </main>
   </div>
-  <PreparationPanel v-if="preparationPanel && workspace" :workspace="workspace" :entry-id="preparationEntryId" @close="preparationPanel = false" />
-  <WorkspaceDialog v-if="modal && workspace" :mode="modal" :entry="dialogEntry" :confirm-remove="confirmRemove" :workspace="workspace" :theme="theme" @theme="setTheme" @close="modal = null" @saved="saved" />
+  <PreparationPanel v-if="preparationPanel && workspace" :workspace="workspace" :entry-id="preparationEntryId" @close="closeDialog" />
+  <WorkspaceDialog v-if="modal && workspace" :mode="modal" :entry="dialogEntry" :confirm-remove="confirmRemove" :workspace="workspace" :theme="theme" @theme="setTheme" @close="closeDialog" @saved="saved" />
 </template>

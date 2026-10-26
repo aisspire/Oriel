@@ -3,10 +3,11 @@ import { computed, nextTick, onUnmounted, ref, watch, useTemplateRef } from 'vue
 import AppIcon from '../../../src/components/AppIcon.vue'
 import WindowControls from '../../../src/components/WindowControls.vue'
 import PluginHelp from '../../../src/components/PluginHelp.vue'
+import PluginHeaderActions from '../../../src/components/PluginHeaderActions.vue'
 import { useWebSession } from '../../../src/composables/useWebSession'
 import { hideWebSurface, type PluginViewProps, type WebEntry } from '../../../src/lib/workspace'
 
-const props = defineProps<PluginViewProps>()
+const props = defineProps<PluginViewProps & { slotEntry?: WebEntry }>()
 const emit = defineEmits<{ edit: [entry: WebEntry]; settings: []; add: []; preparations: [entryId?: string] }>()
 const passwords = ref<HTMLDialogElement>()
 const passwordDialog = ref(false)
@@ -60,6 +61,7 @@ onUnmounted(() => passwords.value?.close())
       </form>
       <div class="toolbar-drag-spacer" data-tauri-drag-region></div>
       <div class="browser-options">
+        <PluginHeaderActions :entry="slotEntry ?? entry" :busy="busy" :can-reload="available && Boolean(state.url)" @reload="browse('reload')" @settings="emit('settings')" @preparations="emit('preparations', entry.id)" />
         <button v-if="entry.preparation" class="plain-icon" type="button" aria-label="当前网页的前置程序" title="当前网页的前置程序" aria-haspopup="dialog" @click="emit('preparations', entry.id)"><AppIcon name="terminal" /></button>
         <PluginHelp :entry="entry" @active="helpOpen = $event" />
         <button class="plain-icon" type="button" aria-label="账号密码" title="账号密码" :disabled="!available" @click="openPasswords"><AppIcon name="key" /></button>
