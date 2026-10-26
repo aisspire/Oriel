@@ -14,6 +14,12 @@ for(const file of ['plugin.json','oriel.ps1','USER_GUIDE.md'])await copyFile(pat
 await copyFile(process.env.SCRIPT_STUDIO_BIN||path.join(tool,'target/windows/debug/script-studio.exe'),path.join(provider,'script-studio.exe'))
 await cp(path.join(tool,'dist'),path.join(provider,'dist'),{recursive:true})
 const manifest=JSON.parse(await readFile(path.join(provider,'plugin.json'),'utf8'));manifest.lifecycle.args=['-DataDir',toolData];await writeFile(path.join(provider,'plugin.json'),JSON.stringify(manifest))
+// The same kind of service application without an icon declaration keeps its monogram.
+const control=path.join(data,'plugins/icon-control');await mkdir(control)
+await copyFile(path.join(tool,'oriel.ps1'),path.join(control,'oriel.ps1'))
+const controlManifest={...structuredClone(manifest),id:'icon-control',name:'Icon Control'};delete controlManifest.icon;delete controlManifest.documentation
+controlManifest.entries=[{...controlManifest.entries[0],title:'Icon Control',service:'icon-control'}]
+await writeFile(path.join(control,'plugin.json'),JSON.stringify(controlManifest))
 await writeFile(path.join(data,'workspace.json'),JSON.stringify({version:4,pluginDirectories:[],pluginRoots:[],webEntries:[],defaultProxy:{mode:'direct'},theme:'light'}))
 const scriptId=crypto.randomUUID(),fixture=path.join(data,'fixture.mjs'),marker=path.join(data,'owned.pid'),externalMarker=path.join(data,'external.pid')
 await writeFile(fixture,"import fs from 'node:fs';fs.writeFileSync(process.argv[2],String(process.pid));process.stdout.write('host integration fixture\\n');setInterval(()=>{},1000)")
@@ -39,6 +45,13 @@ try{
  await assert.rejects(readFile(path.join(toolData,'instance.json')));assert.match(await host('plugin_documentation',{entryId:entry.id}),/WSL 包装脚本/);await assert.rejects(readFile(path.join(toolData,'instance.json')))
  passed('default plugin directory discovers declaration and guide without starting backend')
  await until(()=>shell.evaluate(`Boolean(document.querySelector('button[aria-label="Script Studio"]'))`),'plugin navigation rendered')
+ assert.equal(entry.pluginIcon,'terminal')
+ assert.equal(snapshot.entries.find(e=>e.id==='icon-control.workspace').pluginIcon,null)
+ assert.equal(await shell.evaluate(`Boolean(document.querySelector('button[aria-label="Script Studio"] svg rect'))`),true,'Script Studio declares its own terminal icon')
+ assert.equal(await shell.evaluate(`document.querySelector('button[aria-label="Icon Control"] .site-icon')?.textContent`),'I','undeclared service application keeps its monogram')
+ await assert.rejects(readFile(path.join(toolData,'instance.json')))
+ await writeFile(path.join(data,'plugin-icons.png'),Buffer.from((await shell.command('Page.captureScreenshot',{format:'png'})).data,'base64'))
+ passed('only the plugin declaring a terminal icon changes; another service application keeps its original monogram')
  await shell.evaluate(`document.querySelector('button[aria-label="Script Studio"]').click()`)
  desc=await until(async()=>JSON.parse(await readFile(path.join(toolData,'instance.json'),'utf8')),'tool readiness')
  page=await profile(path.join(data,'web-profiles/script-studio.workspace'),t=>t.url.startsWith(desc.origin))

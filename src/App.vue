@@ -102,6 +102,7 @@ onUnmounted(() => { mounted = false; unlistenFavicon?.() })
           @click="selectedId = entry.id"
         >
           <AppIcon v-if="entry.kind === 'browser'" name="globe" />
+          <AppIcon v-else-if="entry.pluginIcon" :name="entry.pluginIcon" />
           <SiteIcon v-else class="site-monogram" :title="entry.title" :image="workspace?.favicons[entry.id]" />
         </button>
       </nav>

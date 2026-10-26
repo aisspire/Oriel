@@ -26,6 +26,7 @@ export interface WebEntry {
   preparation?: Preparation | null
   editable: boolean
   pluginName: string
+  pluginIcon?: 'terminal' | null
   documentation: string | null
 }
 export interface WorkspaceSnapshot {

@@ -14,6 +14,7 @@ Script Studio 是 Windows 本地脚本管理工具，保留独立运行方式。
 
 完整目录包包含 Windows 可执行文件、独立网页资源、版本 2 plugin.json、前台 oriel.ps1 及 USER_GUIDE.md。用户将交付目录放入默认插件读取目录，或配置额外读取目录后重新加载接入。
 
+- 插件显式声明 `icon: "terminal"` 作为自身侧栏图标；其他未声明的插件不受影响。
 - 声明能力为 `web-page` 和 `local-service-v1`；入口使用 `service: "script-studio"`、`presentation: "application"` 及直连代理。
 - 宿主沿用已有 stdio-v1 首行就绪、实例身份、status 往返核验及受认证 shutdown，不增加协议版本或插件专用路由。
 - 读取声明及说明不启动后台；显式打开后启动并展示无地址栏应用页面。说明可在后台未启动时阅读。
@@ -45,3 +46,5 @@ node scripts/check-script-studio.mjs
 本轮已通过 5 项隔离 Windows 宿主联调，覆盖发现及说明不启动、应用布局和权限边界、页面切换复用、主题与说明焦点、完整退出清理并保留外部进程。宿主前端使用 WSL 隔离构建，Windows Debug 程序按当前源码重建，不沿用本机旧二进制或其他插件结果。
 
 独立工具已完成 Windows Debug／Release 构建、执行与 Edge 界面验收，以及完整目录包移动验证。具体业务检查由独立工具仓库记录；WSL 仍限定为包装脚本前台调用，原生文件选择器人工选取流程留作人工验收，不据此声称覆盖所有系统环境。
+
+同日命令复制与图标修复：插件新增 PowerShell 命令复制并修正运行图标；宿主按插件可选 `icon` 声明展示内置图标，Script Studio 选择终端，未声明的入口保留原有表现，规则见[网页接入规范](web-page-plugins.md)。命令执行及 11 项 Edge 交互检查结果由独立工具记录；本轮图标声明通过 47 项核心测试及 Clippy、WSL 隔离前端构建、Windows Debug 构建和 6 项隔离宿主联调；包含 Script Studio 显示终端图标、未声明图标的同类服务应用保留名称首字的对照检查。未重建宿主安装包或更新用户插件安装目录。

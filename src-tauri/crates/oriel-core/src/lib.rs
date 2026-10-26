@@ -100,6 +100,12 @@ pub enum Presentation {
     Application,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum PluginIcon {
+    Terminal,
+}
+
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Theme {
@@ -137,6 +143,8 @@ pub struct PluginManifest {
     pub version: String,
     pub capabilities: Vec<String>,
     pub entries: Vec<WebEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<PluginIcon>,
     #[serde(default)]
     pub documentation: Option<String>,
     #[serde(default)]
@@ -202,6 +210,7 @@ pub struct RegisteredEntry {
     pub entry: WebEntry,
     pub editable: bool,
     pub plugin_name: String,
+    pub plugin_icon: Option<PluginIcon>,
     pub documentation: Option<String>,
     #[serde(skip)]
     pub directory: Option<PathBuf>,
@@ -500,6 +509,7 @@ impl ConfigStore {
                 }
                 || plugin.schema_version == 1
                     && (plugin.lifecycle.is_some()
+                        || plugin.icon.is_some()
                         || plugin.documentation.is_some()
                         || plugin.entries.iter().any(|e| {
                             e.service.is_some()
@@ -557,6 +567,7 @@ impl ConfigStore {
                     entry,
                     editable: false,
                     plugin_name: plugin.name.clone(),
+                    plugin_icon: plugin.icon.clone(),
                     documentation: plugin.documentation.clone(),
                     directory: directory.map(Path::to_path_buf),
                 }));
@@ -586,6 +597,7 @@ impl ConfigStore {
                         entry,
                         editable: true,
                         plugin_name: "浏览器".into(),
+                        plugin_icon: None,
                         documentation: None,
                         directory: None,
                     }),
@@ -712,6 +724,65 @@ mod tests {
             "entries": [{"id":"main","title":"Tool","kind":"web-page","presentation":"application","url":"http://127.0.0.1:8080"}]
         }).to_string()).unwrap();
         fs::write(directory.join("guide.md"), "# 使用说明\n\n配置和运行分开。").unwrap();
+    }
+
+    #[test]
+    fn plugin_icons_are_opt_in_validated_and_reloaded_per_plugin() {
+        let dir = TestDir::new();
+        let tool = dir.0.join("plugins/tool");
+        let control = dir.0.join("plugins/control");
+        write_plugin(&tool, "example.tool");
+        write_plugin(&control, "example.control");
+        let path = tool.join("plugin.json");
+        let mut manifest: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        manifest["icon"] = serde_json::json!("terminal");
+        fs::write(&path, manifest.to_string()).unwrap();
+        let store = ConfigStore::open(dir.config());
+        let snapshot = store.snapshot(BUILTIN);
+        assert!(snapshot.diagnostics.is_empty());
+        assert_eq!(
+            snapshot
+                .entries
+                .iter()
+                .find(|e| e.entry.id == "example.tool.main")
+                .unwrap()
+                .plugin_icon,
+            Some(PluginIcon::Terminal)
+        );
+        assert!(snapshot
+            .entries
+            .iter()
+            .filter(|e| e.entry.id != "example.tool.main")
+            .all(|e| e.plugin_icon.is_none()));
+
+        manifest.as_object_mut().unwrap().remove("icon");
+        fs::write(&path, manifest.to_string()).unwrap();
+        assert!(store
+            .snapshot(BUILTIN)
+            .entries
+            .iter()
+            .all(|e| e.plugin_icon.is_none()));
+
+        for (version, icon) in [(2, "unknown"), (2, "../icon.svg"), (1, "terminal")] {
+            manifest["schemaVersion"] = serde_json::json!(version);
+            manifest["icon"] = serde_json::json!(icon);
+            if version == 1 {
+                manifest.as_object_mut().unwrap().remove("documentation");
+                manifest["entries"][0]["presentation"] = serde_json::json!("browser");
+            }
+            fs::write(&path, manifest.to_string()).unwrap();
+            let snapshot = store.snapshot(BUILTIN);
+            assert_eq!(snapshot.diagnostics.len(), 1);
+            assert!(snapshot
+                .entries
+                .iter()
+                .all(|e| e.entry.id != "example.tool.main"));
+            assert!(snapshot
+                .entries
+                .iter()
+                .any(|e| e.entry.id == "example.control.main"));
+        }
     }
 
     #[test]
