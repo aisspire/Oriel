@@ -38,7 +38,8 @@
 .load-progress { flex-shrink: 0; height: 2px; background: transparent; }
 .load-progress.is-loading { background: var(--focus); animation: loading-pulse 1.2s ease-in-out infinite alternate; }
 @keyframes loading-pulse { from { opacity: .35; } to { opacity: 1; } }
-.settings-dialog { width: min(460px, calc(100vw - 32px)); max-height: calc(100svh - 40px); padding: 24px; border: 1px solid var(--line); border-radius: 16px; background: var(--surface-solid); color: var(--text-primary); font: inherit; box-shadow: 0 18px 60px #0003; }
+.settings-dialog { width: min(460px, calc(100vw - 32px)); max-height: calc(100svh - 40px); padding: 24px; border: 1px solid var(--line); border-radius: 16px; background: var(--surface-solid); color: var(--text-primary); font: inherit; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.08), 0 20px 48px -6px rgba(0, 0, 0, 0.22); }
+[data-theme='dark'] .settings-dialog { box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35), 0 24px 64px -10px rgba(0, 0, 0, 0.6); border-color: rgba(255, 255, 255, 0.1); }
 .settings-dialog::backdrop { background: #10121b66; }
 .dialog-heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin: -4px -6px 20px 0; }
 .dialog-heading h1 { margin: 0; font-size: 18px; font-weight: 600; }

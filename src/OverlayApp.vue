@@ -143,6 +143,7 @@ onUnmounted(() => {
 
 <style>
 /* 全局透明穿透保障 */
+:root.is-overlay,
 html.is-overlay,
 body.is-overlay {
   background: transparent !important;
@@ -175,10 +176,20 @@ body.is-overlay {
   z-index: 10000;
   padding: 24px;
   box-sizing: border-box;
+  animation: overlay-fade-in 160ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 [data-theme='light'] .overlay-backdrop {
-  background: rgba(235, 236, 242, 0.5);
+  background: rgba(18, 19, 26, 0.42);
+}
+
+[data-theme='dark'] .overlay-backdrop {
+  background: rgba(10, 11, 16, 0.65);
+}
+
+@keyframes overlay-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 .overlay-container {

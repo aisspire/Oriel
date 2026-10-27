@@ -21,6 +21,12 @@
   --focus: #7663ba;
 }
 
+:root.is-overlay,
+html.is-overlay,
+body.is-overlay {
+  background: transparent !important;
+}
+
 :root[data-theme='dark'] {
   color-scheme: dark;
   --shell: #1c1d26;
