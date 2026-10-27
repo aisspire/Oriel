@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import AppIcon from './AppIcon.vue'
+import { useDialogDismiss } from '../composables/useDialogDismiss'
 import ProxyFields from './ProxyFields.vue'
 import PreparationFields from './PreparationFields.vue'
 import PreparationPanel from './PreparationPanel.vue'
@@ -21,6 +22,7 @@ const emit = defineEmits<{
 }>()
 
 const dialog = ref<HTMLDialogElement>()
+useDialogDismiss(dialog)
 const preparationButton = ref<HTMLButtonElement>()
 const preparationPanel = ref(false)
 const titleInput = ref<HTMLInputElement>()

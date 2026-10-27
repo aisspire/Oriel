@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import AppIcon from './AppIcon.vue'
+import { useDialogDismiss } from '../composables/useDialogDismiss'
 import { errorText, hostCommand, type PreparationState, type WorkspaceSnapshot } from '../lib/workspace'
 const props = defineProps<{ workspace: WorkspaceSnapshot; entryId?: string }>()
 const emit = defineEmits<{ close: [] }>()
 const dialog = ref<HTMLDialogElement>()
+useDialogDismiss(dialog)
 const runs = ref<PreparationState[]>([])
 const selected = ref(props.entryId ?? '')
 const logs = ref<string[]>([])

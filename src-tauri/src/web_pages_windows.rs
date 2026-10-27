@@ -47,6 +47,16 @@ where
     receive(rx).await
 }
 
+#[cfg(debug_assertions)]
+pub fn trace_overlay_visibility(view: &Webview, request_id: u32, entry_id: String) {
+    let _ = view.with_webview(move |platform| {
+        let mut visible = BOOL::default();
+        // SAFETY: Tauri runs on the controller's UI thread; output is a live BOOL.
+        let result = unsafe { platform.controller().IsVisible(&mut visible) };
+        eprintln!("Oriel overlay request={request_id} surface_entry={entry_id} controller_visible={} probe_ok={}", visible.as_bool(), result.is_ok());
+    });
+}
+
 fn apply_theme(core: &ICoreWebView2, app: &AppHandle) -> windows::core::Result<()> {
     // Read effective theme on the owning UI thread, never a value captured before async creation.
     let color = match native_theme(app) {

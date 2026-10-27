@@ -5,29 +5,18 @@ import { createServer } from 'vite'
 import 'vue' // Initialize Vue's reactivity before installing the minimal document mock.
 const listeners = new Map()
 const calls = []
-let supported = true
-let ready = true
-let present = true
-let request
 let resolveFavicon
 const emit = (name, payload) => { for (const handler of listeners.get(name) ?? []) handler({ payload }) }
 class Element { isConnected = true; focusCount = 0; focus() { this.focusCount++ } }
 const trigger = new Element()
 globalThis.HTMLElement = Element
 globalThis.document = { activeElement: trigger }
-globalThis.requestAnimationFrame = callback => { callback(); return 0 }
+globalThis.requestAnimationFrame = () => { throw new Error('Hidden overlay must not wait for animation frames') }
 globalThis.window = { __TAURI__: {
   core: { invoke: async (command, args) => {
     calls.push([command, args])
     switch (command) {
       case 'web_favicon': return new Promise(resolve => { resolveFavicon = resolve })
-      case 'overlay_supported': return supported
-      case 'overlay_ready': return ready
-      case 'overlay_show':
-        request = args.request
-        if (present) { emit('overlay-active', true); emit('overlay-presented', request.requestId) }
-        return
-      case 'overlay_hide': emit('overlay-active', false); return
       default: throw new Error(`Unexpected command ${command}`)
     }
   } },
@@ -40,7 +29,6 @@ globalThis.window = { __TAURI__: {
 const vite = await createServer({ configFile: false, server: { middlewareMode: true }, appType: 'custom' })
 try {
   const icons = await vite.ssrLoadModule('/src/lib/favicons.ts')
-  const workspace = await vite.ssrLoadModule('/src/lib/workspace.ts')
   const a = 'https://a.example/', b = 'https://b.example/'
   icons.reconcileFavicons([{ id: 'page', url: a }])
   const old = icons.requestFavicon('page', a)
@@ -64,29 +52,6 @@ try {
   assert.equal(await deleted, null)
   console.log('PASS favicon identity, URL invalidation, deduplication, event priority and delete/re-add generations')
 
-  const opening = workspace.showOverlay({ mode: 'edit', entryId: 'page', confirmRemove: true })
-  assert.equal(await workspace.showOverlay({ mode: 'settings' }), true)
-  assert.equal(await opening, true)
-  assert.equal(calls.filter(([c]) => c === 'overlay_show').length, 1)
-  assert.deepEqual(request, { mode: 'edit', entryId: 'page', confirmRemove: true, requestId: 1 })
-  assert.equal(listeners.get('overlay-presented').size, 0)
-  emit('overlay-active', false)
-  assert.equal(trigger.focusCount, 1)
-  supported = false
-  assert.equal(await workspace.showOverlay({ mode: 'add' }), false)
-  supported = true; ready = false
-  assert.equal(await workspace.showOverlay({ mode: 'settings' }), false)
-  assert.equal(calls.at(-1)[0], 'overlay_hide')
-  ready = true
-  assert.equal(await workspace.showOverlay({ mode: 'preparations', entryId: 'page' }), true)
-  emit('overlay-active', false)
-  present = false
-  assert.equal(await workspace.showOverlay({ mode: 'add' }), false)
-  const timedOut = request.requestId
-  emit('overlay-presented', timedOut)
-  present = true
-  assert.equal(await workspace.showOverlay({ mode: 'settings' }), true)
-  assert.ok(request.requestId > timedOut)
-  assert.equal(listeners.get('overlay-presented').size, 0)
-  console.log('PASS overlay typed requests, repeat-open guard, focus restoration, unsupported platform, readiness/presentation timeouts and recovery')
+  const { checkOverlayState } = await import('./lib/check-overlay-state.mjs')
+  await checkOverlayState(vite, { listeners, calls, trigger, emit })
 } finally { await vite.close() }

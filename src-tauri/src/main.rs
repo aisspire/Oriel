@@ -1,5 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+#[cfg(windows)]
+mod overlay_material;
+mod overlay_state;
 mod preparation_platform;
 mod web_pages;
 #[cfg(target_os = "windows")]
@@ -51,7 +54,9 @@ fn main() {
             window_overlay::overlay_presented,
             window_overlay::overlay_show,
             window_overlay::overlay_hide,
-            window_overlay::overlay_supported,
+            window_overlay::overlay_status,
+            window_overlay::overlay_pending,
+            window_overlay::overlay_fail,
         ])
         .build(context)
         .expect("Oriel could not start")

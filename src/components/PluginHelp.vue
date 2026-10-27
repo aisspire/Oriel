@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { nextTick, onUnmounted, ref, watch } from 'vue'
 import AppIcon from './AppIcon.vue'
+import { useDialogDismiss } from '../composables/useDialogDismiss'
 import DocumentContent from './DocumentContent.vue'
 import { errorText, hideWebSurface, hostCommand, showOverlay, type WebEntry } from '../lib/workspace'
 
 const props = defineProps<{ entry: WebEntry }>()
 const emit = defineEmits<{ active: [value: boolean] }>()
 const dialog = ref<HTMLDialogElement>()
+useDialogDismiss(dialog)
 const trigger = ref<HTMLButtonElement>()
 const active = ref(false)
 const opening = ref(false)
@@ -17,9 +19,10 @@ let generation = 0
 async function open() {
   if (active.value || opening.value) return
   opening.value = true
-  const ok = await showOverlay({ mode: 'help', entryId: props.entry.id })
-  opening.value = false
-  if (ok) return
+  try {
+    if (await showOverlay({ mode: 'help', entryId: props.entry.id })) return
+  } catch (cause) { error.value = errorText(cause); return }
+  finally { opening.value = false }
 
   const current = ++generation
   active.value = true; loading.value = true; text.value = ''; error.value = ''

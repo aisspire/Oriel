@@ -10,7 +10,7 @@ import { useAppearance } from './composables/useAppearance'
 import { getDesktopApi } from './lib/desktop'
 import { reconcileFavicons, setCachedFavicon } from './lib/favicons'
 import { resolvePluginView } from './lib/pluginViews'
-import { errorText, getSlots, hideWebSurface, hostCommand, loadWorkspace, showOverlay, type WebEntry, type WorkspaceSnapshot } from './lib/workspace'
+import { errorText, getSlots, hideWebSurface, hostCommand, loadWorkspace, showOverlay, overlayActive, type WebEntry, type WorkspaceSnapshot } from './lib/workspace'
 
 const { theme, iconSource, reducedMotion, paused, motionPaused, toggleTheme, setTheme, appearanceError } = useAppearance()
 const workspace = ref<WorkspaceSnapshot>()
@@ -25,7 +25,6 @@ const confirmRemove = ref(false)
 const openingDialog = ref(false)
 const preparationPanel = ref(false)
 const preparationEntryId = ref<string>()
-const overlayActive = ref(false)
 
 let dialogTrigger: HTMLElement | null = null
 function rememberTrigger() { dialogTrigger = document.activeElement instanceof HTMLElement ? document.activeElement : null }
@@ -54,7 +53,6 @@ const reloading = ref(false)
 const desktop = Boolean(getDesktopApi())
 let unlistenFavicon: (() => void) | undefined
 let unlistenSaved: (() => void) | undefined
-let unlistenOverlayActive: (() => void) | undefined
 let mounted = false
 
 async function reload(initial = false) {
@@ -115,18 +113,12 @@ onMounted(async () => {
     if (mounted) unlistenSaved = disposeSaved
     else disposeSaved()
 
-    const disposeOverlayActive = await api.event.listen<boolean>('overlay-active', event => {
-      if (mounted) overlayActive.value = Boolean(event.payload)
-    })
-    if (mounted) unlistenOverlayActive = disposeOverlayActive
-    else disposeOverlayActive()
   } catch { /* Icons can still use the cache or monogram. */ }
 })
 onUnmounted(() => {
   mounted = false
   unlistenFavicon?.()
   unlistenSaved?.()
-  unlistenOverlayActive?.()
 })
 </script>
 

@@ -500,6 +500,27 @@ pub fn development_data_root() -> Option<PathBuf> {
     }
 }
 
+// Debug isolation only: observe the actual controller, not the requested Display
+// flag. No new IPC permission or external-page API is introduced for acceptance.
+#[cfg(all(windows, debug_assertions))]
+pub(super) fn trace_overlay_surface(app: &AppHandle, request_id: u32) {
+    if development_data_root().is_none() {
+        return;
+    }
+    let runtime = app.state::<WebPages>();
+    let id = runtime.display.lock().unwrap().id.clone();
+    let Some(id) = id else { return };
+    let label = runtime
+        .sessions
+        .lock()
+        .unwrap()
+        .get(&id)
+        .map(|s| s.label.clone());
+    if let Some(view) = label.and_then(|label| app.get_webview(&label)) {
+        platform::trace_overlay_visibility(&view, request_id, id);
+    }
+}
+
 // Explicit browser arguments are needed for direct mode; preserve Wry's default arguments.
 fn proxy_arguments(proxy: &ProxyPolicy) -> Option<String> {
     const DEFAULT_ARGUMENTS: &str =

@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { nextTick, onMounted, onUnmounted, ref } from 'vue'
+import { nextTick, onErrorCaptured, onMounted, onUnmounted, ref } from 'vue'
 import AppIcon from './components/AppIcon.vue'
 import WorkspaceDialog from './components/WorkspaceDialog.vue'
 import PreparationPanel from './components/PreparationPanel.vue'
 import DocumentContent from './components/DocumentContent.vue'
 import { useAppearance } from './composables/useAppearance'
 import { getDesktopApi } from './lib/desktop'
+import { OverlayContentError, OverlayReceiver } from './lib/overlayReceiver'
+import { useDialogDismiss } from './composables/useDialogDismiss'
 import { hostCommand, loadWorkspace, type OverlayRequest, type WebEntry, type WorkspaceSnapshot } from './lib/workspace'
 
 const { theme, setTheme, calibrateTheme, getThemeRevision } = useAppearance({ readOnlyInitialization: true })
@@ -18,20 +20,21 @@ const helpEntry = ref<WebEntry>()
 const helpDialog = ref<HTMLDialogElement>()
 const helpText = ref('')
 let currentRequest: number | undefined
-let generation = 0
-let queue = Promise.resolve()
+let timer: ReturnType<typeof setTimeout> | undefined
+let alive = true
 const disposers: (() => void)[] = []
-
-function reset() {
-  ++generation
+const receiver = new OverlayReceiver(hostCommand, prepare, () => {
   helpDialog.value?.close()
   mode.value = null
   currentRequest = undefined
   workspace.value = undefined
-}
+})
+useDialogDismiss(helpDialog)
+onErrorCaptured(cause => { void receiver.fail('mount', cause); return false })
+
 async function close() {
   const requestId = currentRequest
-  reset()
+  receiver.reset()
   if (requestId !== undefined) await hostCommand('overlay_hide', { requestId })
 }
 function requestClose() {
@@ -44,17 +47,19 @@ async function handleSaved(snapshot: WorkspaceSnapshot) {
   workspace.value = snapshot
   await getDesktopApi()?.event.emitTo('main', 'workspace-saved').catch(cause => console.error('Workspace notification failed:', cause))
 }
-async function open(request: OverlayRequest, token: number) {
-  try {
-    const themeRevision = getThemeRevision()
-    const snapshot = await loadWorkspace()
-    if (token !== generation) return
-    const entry = snapshot.entries.find(e => e.id === request.entryId)
-    if ((request.mode === 'edit' || request.mode === 'help') && !entry) throw new Error('目标网页已不存在。')
-    if (request.mode === 'edit' && !entry?.editable) throw new Error('此网页不能编辑。')
-    let text = ''
-    if (request.mode === 'help') text = await hostCommand<string>('plugin_documentation', { entryId: entry!.id })
-    if (token !== generation) return
+async function prepare(request: OverlayRequest) {
+  const themeRevision = getThemeRevision()
+  const snapshot = await loadWorkspace()
+  const entry = snapshot.entries.find(e => e.id === request.entryId)
+  if ((request.mode === 'edit' || request.mode === 'help') && !entry) throw new OverlayContentError('目标网页已不存在。')
+  if (request.mode === 'edit' && !entry?.editable) throw new OverlayContentError('此网页不能编辑。')
+  let text = ''
+  if (request.mode === 'help') {
+    try { text = await hostCommand<string>('plugin_documentation', { entryId: entry!.id }) }
+    catch (cause) { throw new OverlayContentError(String(cause)) }
+  }
+  return async () => {
+    currentRequest = request.requestId
     workspace.value = snapshot
     if (snapshot.theme) calibrateTheme(snapshot.theme, themeRevision)
     dialogEntry.value = entry
@@ -64,42 +69,42 @@ async function open(request: OverlayRequest, token: number) {
     helpText.value = text
     mode.value = request.mode
     await nextTick()
-    if (token !== generation) return
+    if (currentRequest !== request.requestId) return
     if (request.mode === 'help') helpDialog.value?.showModal()
-    await hostCommand('overlay_presented', { requestId: request.requestId })
-  } catch (cause) {
-    if (token === generation) { mode.value = null; console.error('Overlay request failed:', cause) }
-    // The main window's five-second deadline clears native state and opens its dialog.
+    if (!document.querySelector('dialog[open]')) throw new Error('悬浮弹窗未完成挂载。')
   }
 }
+function wake() { void receiver.poll() }
+async function poll() {
+  await receiver.poll()
+  if (alive) timer = setTimeout(poll, 40)
+}
 onMounted(async () => {
-  document.documentElement.classList.add('is-overlay')
-  document.body.classList.add('is-overlay')
   const api = getDesktopApi()
   if (!api) return
-  disposers.push(await api.event.listen<OverlayRequest>('overlay-open', ({ payload }) => {
-    reset()
-    currentRequest = payload.requestId
-    const token = generation
-    queue = queue.then(() => { if (token === generation) return open(payload, token) })
-  }))
-  disposers.push(await api.event.listen('overlay-close-request', requestClose))
-  disposers.push(await api.event.listen<number>('overlay-reset', ({ payload }) => {
-    if (payload === currentRequest) reset()
-  }))
-  await hostCommand('overlay_ready')
+  try {
+    disposers.push(await api.event.listen('overlay-open', () => { void receiver.poll() }))
+    disposers.push(await api.event.listen('overlay-close-request', requestClose))
+    disposers.push(await api.event.listen<number>('overlay-reset', ({ payload }) => {
+      if (payload === currentRequest) receiver.reset()
+    }))
+    document.addEventListener('oriel-overlay-poll', wake)
+    await hostCommand('overlay_ready')
+    void poll()
+  } catch (cause) { await receiver.fail('initialization', cause) }
 })
 onUnmounted(() => {
-  reset()
+  alive = false
+  clearTimeout(timer)
+  document.removeEventListener('oriel-overlay-poll', wake)
+  receiver.stop()
   disposers.forEach(dispose => dispose())
-  document.documentElement.classList.remove('is-overlay')
-  document.body.classList.remove('is-overlay')
 })
 </script>
 
 <template>
-  <div v-if="mode && workspace" class="overlay-backdrop" @click.self="requestClose">
-    <div class="overlay-container" @click.stop>
+  <div v-if="mode && workspace" class="overlay-backdrop">
+    <div class="overlay-container">
       <!-- 工作台设置 / 添加网页 / 编辑网页 -->
       <WorkspaceDialog
         v-if="mode === 'settings' || mode === 'add' || mode === 'edit'"
@@ -142,7 +147,7 @@ onUnmounted(() => {
 </template>
 
 <style>
-/* 全局透明穿透保障 */
+/* The window receives input; transparency only exposes the native material. */
 :root.is-overlay,
 html.is-overlay,
 body.is-overlay {
@@ -170,26 +175,18 @@ body.is-overlay {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(18, 19, 26, 0.45);
-  backdrop-filter: blur(14px) saturate(140%);
-  -webkit-backdrop-filter: blur(14px) saturate(140%);
+  background: rgba(18, 19, 26, 0.18);
   z-index: 10000;
   padding: 24px;
   box-sizing: border-box;
-  animation: overlay-fade-in 160ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 [data-theme='light'] .overlay-backdrop {
-  background: rgba(18, 19, 26, 0.42);
+  background: rgba(18, 19, 26, 0.18);
 }
 
 [data-theme='dark'] .overlay-backdrop {
-  background: rgba(10, 11, 16, 0.65);
-}
-
-@keyframes overlay-fade-in {
-  from { opacity: 0; }
-  to { opacity: 1; }
+  background: rgba(10, 11, 16, 0.26);
 }
 
 .overlay-container {

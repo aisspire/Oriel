@@ -32,7 +32,7 @@ npm run icons       # 从主 SVG 重新导出深浅主题与桌面图标
   set -eu
   oriel_build_dir="$(mktemp -d /tmp/oriel-frontend-build.XXXXXX)"
   cp package.json package-lock.json tsconfig.json vite.config.ts index.html .node-version "$oriel_build_dir/"
-  cp -a src public "$oriel_build_dir/"
+  cp -a src public scripts "$oriel_build_dir/"
   mkdir "$oriel_build_dir/plugins"
   cp -a plugins/builtin "$oriel_build_dir/plugins/"
   cd "$oriel_build_dir"
@@ -100,6 +100,10 @@ cargo test --manifest-path src-tauri/Cargo.toml -p oriel-core --locked
 ```
 
 在 Windows 构建调试程序后，可运行 `npm run check:browser`；默认程序路径为 `target/windows/debug/oriel.exe`，验收数据隔离保存在 `target/browser-check/`，需要端口 1420 可用。实际网站密码保存提示与再次填充仍需测试账号人工验收。
+
+悬浮弹窗的跨平台状态检查运行 `npm run check:ui-state`；WSL 缺少原生绑定时在上述隔离副本中执行。原生请求状态机可独立运行 `rustc --test src-tauri/src/overlay_state.rs -o /tmp/oriel-overlay-state-tests` 后执行该产物。
+
+Windows 构建最新 debug 宿主后，分别在系统“透明效果”开启、关闭时运行 `npm run check:overlay -- --material=enabled` 和 `npm run check:overlay -- --material=disabled`。脚本只使用生成的网页和测试插件，记录 20 次暖开启耗时、原生 controller 可见性及系统合成截图；窗口与物理 DPI 的人工验收、构建路径及本轮结果见[悬浮层专题](docs/design/web-page-plugins.md#悬浮层与关闭语义)。本轮 Windows 验收尚未运行，P95 ≤500 ms 是目标。
 
 声明示例、配置归属、原生能力和验证边界见[网页接入初版](docs/design/web-page-plugins.md)。
 
