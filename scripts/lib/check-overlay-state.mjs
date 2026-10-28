@@ -57,6 +57,25 @@ export async function checkOverlayState(vite, { calls, trigger, emit }) {
   await close(client)
   console.log('PASS command-authoritative opening/closing with every event lost, duplicate opens, focus and reuse')
 
+  for (const mode of ['passwords', 'tool-menu', 'page-menu']) {
+    reset(); autoShow = false; client = new OverlayClient()
+    const entryId = `fixture.${mode}`
+    {
+      const receiver = new OverlayReceiver(invoke, async incoming => {
+        assert.equal(incoming.mode, mode)
+        assert.equal(incoming.entryId, entryId)
+        return async () => { mounted++ }
+      }, () => {})
+      const opening = client.show({ mode, entryId })
+      await until(() => request); await receiver.poll()
+      assert.equal(await opening, true)
+      assert.equal(mounted, 1)
+      assert.equal(calls.some(([name]) => name === 'web_show'), false)
+      await close(client); receiver.stop()
+    }
+  }
+  console.log('PASS password/tool/page modes preserve entry identity without hiding a surface')
+
   reset(); client = new OverlayClient(); status.supported = false
   assert.equal(await client.show({ mode: 'add' }), false)
   reset(); client = new OverlayClient(); status.disabled = { stage: 'initialization', message: 'init failed', infrastructure: true }

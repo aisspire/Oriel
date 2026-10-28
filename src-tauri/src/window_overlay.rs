@@ -1,5 +1,7 @@
 use std::sync::Mutex;
-use tauri::{App, AppHandle, Emitter, EventTarget, Manager, Webview, WebviewWindow, WindowEvent};
+use tauri::{
+    App, AppHandle, Emitter, EventTarget, Manager, Webview, WebviewWindow, Window, WindowEvent,
+};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -9,6 +11,11 @@ pub enum OverlayMode {
     Edit,
     Preparations,
     Help,
+    Passwords,
+    #[serde(rename = "tool-menu")]
+    ToolMenu,
+    #[serde(rename = "page-menu")]
+    PageMenu,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -128,6 +135,16 @@ fn require_overlay(caller: &Webview) -> Result<(), String> {
     }
     Ok(())
 }
+fn focus_main(app: &AppHandle) {
+    if let Some(main) = app.get_window("main") {
+        let _ = main.set_focus();
+    }
+    // Native activation can otherwise focus the last page child instead of the
+    // host WebView. Restore the host before its DOM trigger receives focus.
+    if let Some(host) = app.get_webview("main") {
+        let _ = host.set_focus();
+    }
+}
 fn hide_window(app: &AppHandle, request_id: u32) -> Result<(), String> {
     if let Some(overlay) = app.get_webview_window("overlay") {
         overlay.hide().map_err(|e| e.to_string())?;
@@ -159,11 +176,9 @@ pub fn create(app: &App) -> tauri::Result<()> {
         let Some(configuration) = configuration else {
             return Ok(());
         };
-        let main = app
-            .get_webview_window("main")
-            .expect("main window created first");
+        let main = app.get_window("main").expect("main window created first");
         let mut builder = tauri::WebviewWindowBuilder::from_config(app, &configuration)?
-            .owner(&main)?
+            .owner_raw(main.hwnd()?)
             .theme(Some(super::web_pages::native_theme(app.handle())));
         if let Some(root) = super::web_pages::development_data_root() {
             builder = builder.data_directory(root.join("shell"));
@@ -187,14 +202,14 @@ pub fn create(app: &App) -> tauri::Result<()> {
     }
 }
 
-pub fn sync_bounds(main: &WebviewWindow, overlay: &WebviewWindow) -> tauri::Result<()> {
+pub fn sync_bounds(main: &Window, overlay: &WebviewWindow) -> tauri::Result<()> {
     // Use the main client area; outer bounds include the native resize frame.
     overlay.set_position(main.inner_position()?)?;
     overlay.set_size(main.inner_size()?)?;
     Ok(())
 }
 
-pub fn sync_on_event(main: &WebviewWindow, event: &WindowEvent) {
+pub fn sync_on_event(main: &Window, event: &WindowEvent) {
     if matches!(
         event,
         WindowEvent::Moved(_) | WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. }
@@ -311,11 +326,12 @@ pub async fn overlay_presented(
             .advance(request_id, Phase::Mounted)?;
         trace(&app, "mounted");
         let result = (|| {
-            let main = app.get_webview_window("main").ok_or("主窗口不存在。")?;
+            // main hosts child page WebViews after browsing starts. Tauri's
+            // get_webview_window excludes such multi-WebView windows.
+            let main = app.get_window("main").ok_or("主窗口不存在。")?;
             let overlay = app.get_webview_window("overlay").ok_or("悬浮层不存在。")?;
             sync_bounds(&main, &overlay).map_err(|e| e.to_string())?;
-            #[cfg(windows)]
-            super::overlay_material::apply(&overlay);
+            eprintln!("Oriel overlay material=transparent-css");
             // No state lock held during any of the native operations above/below.
             app.state::<Mutex<OverlayState>>()
                 .lock()
@@ -326,6 +342,7 @@ pub async fn overlay_presented(
             Ok::<(), String>(())
         })();
         if let Err(message) = result {
+            trace(&app, &format!("failed:show message={message}"));
             app.state::<Mutex<OverlayState>>().lock().unwrap().fail(
                 Some(request_id),
                 Failure {
@@ -386,9 +403,7 @@ pub async fn overlay_fail(
             );
             if let Some(id) = request_id.or(affected) {
                 let _ = hide_window(&app, id);
-                if let Some(main) = app.get_webview_window("main") {
-                    let _ = main.set_focus();
-                }
+                focus_main(&app);
             }
         }
         Ok(status(&app))
@@ -411,9 +426,7 @@ pub async fn overlay_hide(
             .cancel(request_id);
         if accepted {
             hide_window(&app, request_id)?;
-            if let Some(main) = app.get_webview_window("main") {
-                let _ = main.set_focus();
-            }
+            focus_main(&app);
             trace(&app, "closed");
         }
         Ok(status(&app))

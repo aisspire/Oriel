@@ -969,6 +969,23 @@ pub async fn web_navigate(
     runtime.apply_display(&app)
 }
 
+// Read diagnostics without creating, moving or changing visibility of a page.
+#[tauri::command]
+pub fn web_session_state(
+    caller: Webview,
+    runtime: tauri::State<'_, WebPages>,
+    entry_id: String,
+) -> Result<Option<WebSessionState>> {
+    authorize(&caller)?;
+    runtime.entry(&entry_id)?;
+    Ok(runtime
+        .sessions
+        .lock()
+        .unwrap()
+        .get(&entry_id)
+        .map(|s| s.state.clone()))
+}
+
 #[tauri::command]
 pub async fn web_action(
     caller: Webview,

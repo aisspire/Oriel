@@ -16,6 +16,7 @@ export function useWebSession(entry: () => WebEntry, supported: () => boolean, s
   let alive = false
   let frame = 0
   let unlisten: (() => void) | undefined
+  let unlistenRetry: (() => void) | undefined
   let unlistenPrepared: (() => void) | undefined
   let observer: ResizeObserver | undefined
 
@@ -95,12 +96,17 @@ export function useWebSession(entry: () => WebEntry, supported: () => boolean, s
         })
         if (alive) unlistenPrepared = disposePrepared
         else disposePrepared()
+        const disposeRetry = await api.event.listen<string>('web-retry-request', event => {
+          if (alive && event.payload === entry().id) retry()
+        })
+        if (alive) unlistenRetry = disposeRetry
+        else disposeRetry()
       } catch (cause) { error.value = errorText(cause) }
     }
     if (alive) schedule()
   })
   onUnmounted(() => {
-    alive = false; cancelAnimationFrame(frame); observer?.disconnect(); unlisten?.(); unlistenPrepared?.()
+    alive = false; cancelAnimationFrame(frame); observer?.disconnect(); unlisten?.(); unlistenPrepared?.(); unlistenRetry?.()
     window.removeEventListener('resize', schedule)
     void hideWebSurface().catch(() => {})
   })

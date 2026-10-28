@@ -230,6 +230,21 @@ mod tests {
         assert_eq!(s.request.as_ref().unwrap().value, "help");
     }
     #[test]
+    fn entry_dialog_modes_keep_identity_across_reuse() {
+        let mut s = State::default();
+        s.ready = true;
+        for (index, mode) in ["passwords", "tool-menu", "page-menu"].iter().enumerate() {
+            let id = index as u32 + 1;
+            s.submit(id, (mode, "plugin.page")).unwrap();
+            for phase in [Phase::Received, Phase::Mounted, Phase::Shown] {
+                s.advance(id, phase).unwrap();
+            }
+            assert_eq!(s.request.as_ref().unwrap().value, (mode, "plugin.page"));
+            assert!(s.cancel(id));
+            assert!(s.advance(id, Phase::Shown).is_err());
+        }
+    }
+    #[test]
     fn business_failure_recovers_but_timeout_disables_session() {
         let mut s = State::default();
         s.submit(1, ()).unwrap();

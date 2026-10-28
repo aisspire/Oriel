@@ -6,6 +6,7 @@ import PluginHeaderActions from '../../../src/components/PluginHeaderActions.vue
 import WindowControls from '../../../src/components/WindowControls.vue'
 import { defaultBrowserSidebar, errorText, hideWebSurface, hostCommand, type BrowserSidebar, type PluginViewProps, type WebEntry, type WorkspaceSnapshot } from '../../../src/lib/workspace'
 import BrowserView from './BrowserView.vue'
+import { showOverlay } from '../../../src/lib/workspace'
 
 const props = defineProps<PluginViewProps>()
 const emit = defineEmits<{
@@ -29,6 +30,7 @@ const dropAfter = ref(false)
 const actions = ref<HTMLDialogElement>()
 const menuEntry = ref<WebEntry>()
 const menuOpen = ref(false)
+const menuOpening = ref(false)
 const menuPosition = ref({ left: '0px', top: '0px' })
 const menuIndex = computed(() => pages.value.findIndex(entry => entry.id === menuEntry.value?.id))
 let menuTrigger: HTMLElement | undefined
@@ -147,7 +149,7 @@ function movePage(offset: number) {
   void reorder(ids)
 }
 async function openMenu(event: MouseEvent | KeyboardEvent, entry: WebEntry) {
-  if (saving.value || menuOpen.value) return
+  if (saving.value || menuOpen.value || menuOpening.value) return
   const trigger = event.currentTarget as HTMLElement
   menuTrigger = trigger.matches('button') ? trigger : trigger.querySelector<HTMLButtonElement>('.fixed-page-button') ?? trigger
   const bounds = trigger.getBoundingClientRect()
@@ -155,12 +157,20 @@ async function openMenu(event: MouseEvent | KeyboardEvent, entry: WebEntry) {
     left: `${Math.max(8, Math.min(bounds.left, window.innerWidth - 228))}px`,
     top: `${Math.max(8, Math.min(bounds.bottom + 4, window.innerHeight - 252))}px`,
   }
-  menuEntry.value = entry; menuOpen.value = true
+  menuEntry.value = entry
+  menuTrigger.focus()
+  menuOpening.value = true
   try {
-    await hideWebSurface()
+    if (await showOverlay({ mode: 'page-menu', entryId: entry.id })) {
+      closeMenu(false)
+      return
+    }
+    menuOpen.value = true
+    await hideWebSurface() // Unsupported platforms / infrastructure failure only.
     await nextTick()
     if (menuOpen.value && !props.suspended) actions.value?.showModal()
   } catch (cause) { closeMenu(); error.value = errorText(cause) }
+  finally { menuOpening.value = false }
 }
 function closeMenu(restoreFocus = true) {
   actions.value?.close(); menuOpen.value = false

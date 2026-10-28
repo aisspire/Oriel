@@ -139,8 +139,9 @@ pub fn create(app: &tauri::App) -> tauri::Result<()> {
         window.maximize()?;
     }
     let observed_window = window.clone();
+    let observed_native_window = app.get_window("main").ok_or(tauri::Error::WindowNotFound)?;
     window.on_window_event(move |event| {
-        super::window_overlay::sync_on_event(&observed_window, event);
+        super::window_overlay::sync_on_event(&observed_native_window, event);
         if !matches!(
             event,
             WindowEvent::Moved(_)

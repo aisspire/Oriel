@@ -103,7 +103,7 @@ cargo test --manifest-path src-tauri/Cargo.toml -p oriel-core --locked
 
 悬浮弹窗的跨平台状态检查运行 `npm run check:ui-state`；WSL 缺少原生绑定时在上述隔离副本中执行。原生请求状态机可独立运行 `rustc --test src-tauri/src/overlay_state.rs -o /tmp/oriel-overlay-state-tests` 后执行该产物。
 
-Windows 构建最新 debug 宿主后，分别在系统“透明效果”开启、关闭时运行 `npm run check:overlay -- --material=enabled` 和 `npm run check:overlay -- --material=disabled`。脚本只使用生成的网页和测试插件，记录 20 次暖开启耗时、原生 controller 可见性及系统合成截图；窗口与物理 DPI 的人工验收、构建路径及本轮结果见[悬浮层专题](docs/design/web-page-plugins.md#悬浮层与关闭语义)。本轮 Windows 验收尚未运行，P95 ≤500 ms 是目标。
+Windows 构建最新 debug 宿主后运行 `npm run check:overlay`；可在手动开／关系统“透明效果”后分别附加 `-- --transparency=enabled` 或 `-- --transparency=disabled` 记录对照条件。Overlay 已停用原生 Acrylic，改用物理透明与 CSS 暗场，账号密码、应用操作及固定页签菜单也统一承载，正常打开保留底层网页。脚本使用隔离网页和测试插件，记录 20 次暖开启耗时、原生 controller 可见性及系统合成截图；截图来源无法确认时拒绝保存，可加 `-- --skip-capture` 只验证交互。当前 Windows 构建与交互回归通过；透明合成视觉、系统开关／节电对照和物理 DPI 仍待人工验收，实际结果见[悬浮层专题](docs/design/web-page-plugins.md#悬浮层与关闭语义)。
 
 声明示例、配置归属、原生能力和验证边界见[网页接入初版](docs/design/web-page-plugins.md)。
 

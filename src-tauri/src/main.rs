@@ -1,7 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-#[cfg(windows)]
-mod overlay_material;
 mod overlay_state;
 mod preparation_platform;
 mod web_pages;
@@ -48,6 +46,7 @@ fn main() {
             web_pages::preparation_pick_file,
             web_pages::web_navigate,
             web_pages::web_action,
+            web_pages::web_session_state,
             web_pages::web_clear_passwords,
             web_pages::web_favicon,
             window_overlay::overlay_ready,

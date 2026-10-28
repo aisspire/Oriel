@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { nextTick, onErrorCaptured, onMounted, onUnmounted, ref } from 'vue'
 import AppIcon from './components/AppIcon.vue'
+import EntryActionDialog from './components/EntryActionDialog.vue'
 import WorkspaceDialog from './components/WorkspaceDialog.vue'
 import PreparationPanel from './components/PreparationPanel.vue'
 import DocumentContent from './components/DocumentContent.vue'
@@ -51,8 +52,8 @@ async function prepare(request: OverlayRequest) {
   const themeRevision = getThemeRevision()
   const snapshot = await loadWorkspace()
   const entry = snapshot.entries.find(e => e.id === request.entryId)
-  if ((request.mode === 'edit' || request.mode === 'help') && !entry) throw new OverlayContentError('目标网页已不存在。')
-  if (request.mode === 'edit' && !entry?.editable) throw new OverlayContentError('此网页不能编辑。')
+  if (['edit', 'help', 'passwords', 'tool-menu', 'page-menu'].includes(request.mode) && !entry) throw new OverlayContentError('目标网页已不存在。')
+  if (['edit', 'page-menu'].includes(request.mode) && !entry?.editable) throw new OverlayContentError('此网页不能编辑。')
   let text = ''
   if (request.mode === 'help') {
     try { text = await hostCommand<string>('plugin_documentation', { entryId: entry!.id }) }
@@ -73,6 +74,17 @@ async function prepare(request: OverlayRequest) {
     if (request.mode === 'help') helpDialog.value?.showModal()
     if (!document.querySelector('dialog[open]')) throw new Error('悬浮弹窗未完成挂载。')
   }
+}
+async function navigate(options: { mode: OverlayRequest['mode']; confirmRemove?: boolean }) {
+  confirmRemove.value = Boolean(options.confirmRemove)
+  mode.value = options.mode
+  await nextTick()
+}
+async function retryEntry() {
+  const entryId = dialogEntry.value?.id
+  if (!entryId) return
+  await getDesktopApi()?.event.emitTo('main', 'web-retry-request', entryId)
+  await close()
 }
 function wake() { void receiver.poll() }
 async function poll() {
@@ -126,6 +138,18 @@ onUnmounted(() => {
         @close="close"
       />
 
+      <EntryActionDialog
+        v-else-if="(mode === 'passwords' || mode === 'tool-menu' || mode === 'page-menu') && dialogEntry"
+        :mode="mode"
+        :entry="dialogEntry"
+        :workspace="workspace"
+        :supported="workspace.browserSupported"
+        @close="close"
+        @navigate="navigate"
+        @retry="retryEntry"
+        @saved="handleSaved"
+      />
+
       <!-- 插件使用说明文档 -->
       <dialog
         v-else-if="mode === 'help'"
@@ -147,7 +171,7 @@ onUnmounted(() => {
 </template>
 
 <style>
-/* The window receives input; transparency only exposes the native material. */
+/* The window receives input; the transparent surface exposes the live page. */
 :root.is-overlay,
 html.is-overlay,
 body.is-overlay {
@@ -175,18 +199,18 @@ body.is-overlay {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(18, 19, 26, 0.18);
+  background: rgba(18, 19, 26, 0.28);
   z-index: 10000;
   padding: 24px;
   box-sizing: border-box;
 }
 
 [data-theme='light'] .overlay-backdrop {
-  background: rgba(18, 19, 26, 0.18);
+  background: rgba(18, 19, 26, 0.28);
 }
 
 [data-theme='dark'] .overlay-backdrop {
-  background: rgba(10, 11, 16, 0.26);
+  background: rgba(10, 11, 16, 0.42);
 }
 
 .overlay-container {

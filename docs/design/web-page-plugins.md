@@ -168,37 +168,61 @@ npm run check:browser
 
 ## 悬浮层与关闭语义
 
-Windows 设置、添加网页、编辑网页（含移除确认）、前置程序和插件说明五类宿主弹窗使用透明独立 `overlay` 窗口，覆盖首页、浏览器及插件布局入口。通过锁定 Tauri 2.12.4 的 `owner` 接口归属 `main`，不增加任务栏入口；移动、缩放、最大化及 DPI 变化按主窗口客户区物理坐标同步。普通关闭隐藏复用，主窗口退出销毁；创建失败保留主窗口。应用操作菜单、页签菜单、密码弹窗及插件业务弹窗保持现状，不迁移。
+Windows 设置、添加网页、编辑网页（含移除确认）、前置程序、插件说明、账号密码、应用操作菜单及固定页签菜单统一使用透明独立 `overlay` 窗口，覆盖首页、浏览器及插件布局入口。主窗口按原生 `Window` 获取：创建网页子 WebView 后，main 不再符合 Tauri `get_webview_window` 的单 WebView 条件，不能据此判断主窗口不存在。归属、边界同步和关闭后恢复都使用原生窗口身份，关闭时另将键盘焦点交还本地 main WebView。通过锁定 Tauri 2.12.4 的 `owner_raw(main.hwnd())` 接口归属原生 `main`，不增加任务栏入口；移动、缩放、最大化及 DPI 变化按主窗口客户区物理坐标同步。普通关闭隐藏复用，主窗口退出销毁；创建失败保留主窗口。这些宿主局部弹窗已完成迁移；独立插件业务页面中的弹窗仍由工具自身管理。
 
-请求仍只包含 camelCase 的 `requestId`、`mode`、`entryId`、`confirmRemove`，不传任意 JSON 或网页副本。`overlay_status` 返回原生就绪、会话故障、请求阶段、耗时及失败原因；main 提交后，overlay 通过 `overlay_pending` 获取请求，读取最新快照查找入口并挂载 dialog，经 Vue `nextTick` 后按编号调用 `overlay_presented`。隐藏窗口不等待动画帧。主窗口轮询命令状态确认已显示；事件及原生脚本唤醒只加速读取，不携带可靠状态，也不决定首次打开是否成功。
+请求仍只包含 camelCase 的 `requestId`、`mode`、`entryId`、`confirmRemove`，不传任意 JSON 或网页副本。`mode` 为 `settings`、`add`、`edit`、`preparations`、`help`、`passwords`、`tool-menu` 或 `page-menu`；新增模式沿用同一握手与入口身份校验。`overlay_status` 返回原生就绪、会话故障、请求阶段、耗时及失败原因；main 提交后，overlay 通过 `overlay_pending` 获取请求，读取最新快照查找入口并挂载 dialog，经 Vue `nextTick` 后按编号调用 `overlay_presented`。隐藏窗口不等待动画帧。主窗口轮询命令状态确认已显示；事件及原生脚本唤醒只加速读取，不携带可靠状态，也不决定首次打开是否成功。
 
 请求串行，编号单调递增；取消会使已提交及尚未到达的同号请求失效。读取完成后、挂载前和原生显示前检查请求身份、阶段与截止时间。窗口操作和状态转换在原生主线程串行执行，状态锁不跨窗口调用或异步等待持有；超时、取消后的迟到读取、挂载及确认均不能重新显示窗口。记录创建、就绪、接收、挂载、显示和失败阶段的耗时；诊断包含请求号及模式。
 
 初始化、挂载、窗口呈现或 IPC 基础设施错误立即上报，5 秒仅是无响应的最终上限。故障后本次 Oriel 会话直接使用本地弹窗，重启后重试。入口不存在、不可编辑或说明读取失败属于业务错误，向原入口显示具体原因，保留悬浮层后续可用性，不自动改为新建入口。新命令继续校验本地来源及 main／overlay 身份，只有 main 可提交，只有 overlay 可报告就绪、读取待处理请求或确认挂载，不扩大外部网页权限。
 
-原生窗口和 WebView 背景显式透明，使用既有 Tauri Acrylic 接口，不使用 CSS 跨窗口模糊。每次显示前重读系统透明效果、高对比度、省电及系统版本条件；禁用或不支持时清除材质，保留普通半透明遮罩。Windows 11 22H2+ 另读取 DWM 属性检查材质设置；锁定版本在旧 Windows 上不返回底层材质调用结果，仍需目标平台视觉验收。系统也可能限制 Acrylic，见[微软说明](https://learn.microsoft.com/en-us/windows/apps/design/style/acrylic)。材质降级不触发本地弹窗回退，也不隐藏底层网页。中央 dialog 使用现有不透明 surface，只保留一层轻量暗色遮罩；不启用点击穿透。
+原生窗口保持 `transparent: true`，WebView 背景显式透明；删除系统 Acrylic 材质申请及其策略检测代码，不再向 DWM 请求桌面采样、模糊或白雾。遮罩完全由前端 CSS 控制：浅色 `rgba(18, 19, 26, 0.28)`，深色 `rgba(10, 11, 16, 0.42)`。不使用全屏 `filter`／`backdrop-filter`；dialog 使用现有不透明 surface 与柔和阴影建立层次，其原生 `::backdrop` 透明，避免重复遮罩。不启用点击穿透。系统透明效果或节电设置不再选择另一套材质路径；实际显示与物理 DPI 仍需目标平台视觉验收。
 
-五类弹窗及本地回退共用外侧指针处理：同一主指针的按下、抬起均在最上层 dialog 边界外，才派发可取消的 `cancel`。内部点击、内部按下后拖出、外部按下后拖入、不同指针或已取消的手势均不关闭。外侧点击、Escape、关闭按钮及原生关闭统一使用原有取消路径；保存期间忽略关闭。设置中的前置程序关闭后返回设置，保留草稿并恢复面板入口焦点。关闭悬浮层后主窗口通过命令状态确认并恢复触发元素焦点，通知丢失时同样生效。
+所有宿主弹窗及本地回退共用外侧指针处理：同一主指针的按下、抬起均在最上层 dialog 边界外，才派发可取消的 `cancel`。内部点击、内部按下后拖出、外部按下后拖入、不同指针或已取消的手势均不关闭。外侧点击、Escape、关闭按钮及原生关闭统一使用原有取消路径；保存期间忽略关闭。设置中的前置程序关闭后返回设置，保留草稿并恢复面板入口焦点。关闭悬浮层后主窗口通过命令状态确认并恢复触发元素焦点，通知丢失时同样生效。
+
+账号密码、应用菜单复用 `EntryActionDialog`，常规打开只提交 Overlay 请求，不设置本地悬停状态或隐藏网页。清除密码调用既有 `web_clear_passwords` 并刷新对应入口；操作中阻止 Escape、外侧点击、关闭按钮及原生关闭，成功后显示反馈。应用菜单支持刷新、重试、前置程序、设置与诊断：`web_session_state` 只读对应会话，沿用本地 main／overlay 来源校验，不创建页面或改变可见性；重试定向通知 main，由当前会话执行既有准备流程。菜单切换到设置或前置程序复用当前 Overlay 请求，不重新打开第二个窗口。
+
+固定页签菜单使用紧凑的顶层 Overlay dialog，保留编辑、上下移、移除确认与读写禁用规则；按最新快照定位目标，非当前页签菜单不选择或加载该页。排序保存后通知 main 重读快照。支持三点按钮、右键和 Shift+F10／菜单键；打开前聚焦对应触发元素，关闭后恢复。其他平台或基础设施失败时保留原有本地菜单路径。
 
 正常悬浮流程保留底层原生网页控制器、页面实例及后台生命周期。其他平台或基础设施失败回退沿用本地隐藏／恢复行为。主题仅定向发送给 main 和 overlay，打开时只读校准有效主题；保存后定向通知 main 重读快照，不广播工作区副本。
 
-### 2026-10-28 验证与目标平台验收
+### 2026-10-28 初始握手改造与目标平台验收
 
 本轮 WSL 隔离副本按原 lockfile 离线安装依赖，运行 `npm run build`（含类型检查）和 `npm run check:ui-state`；原生状态机以 `rustc --test src-tauri/src/overlay_state.rs` 独立运行，核心回归运行 `cargo test --locked --manifest-path src-tauri/Cargo.toml -p oriel-core`。结果：前端构建、状态检查、3 项原生状态机检查及 55 项核心测试通过。状态检查覆盖通知全部丢失、初始化失败、业务错误、挂载失败、取消、实际 5 秒超时、迟到内容／挂载／确认、重复打开、焦点恢复与会话内快速回退；共享指针处理检查覆盖内外点击、拖出／拖入、指针取消及最上层和保存保护路径。这些检查不等同于真实浏览器或 Windows 原生交互验收。
 
-完整宿主 `cargo check --locked` 仍因缺少 `pkg-config` 在 `libdbus-sys` 构建阶段停止；当前只安装 Linux target，未安装系统工具或额外 target。新增 Windows 验收脚本仅完成语法检查，宿主原生代码尚未编译验收。
+初次 WSL 验证时，完整 Linux 宿主 `cargo check --locked` 因缺少 `pkg-config` 在 `libdbus-sys` 构建阶段停止，Windows 脚本仅检查语法。后续在沙箱外调用工作站已有 Windows 工具链完成下述回归；未安装系统工具、target 或依赖。
 
 目标平台具备原有 Windows 工具链时，构建最新前端及 debug 宿主后，在 Windows Node 下分别执行：
 
 ```powershell
-npm run check:overlay -- --material=enabled
+npm run check:overlay -- --transparency=enabled
 # 在系统设置中手动关闭“透明效果”后，再运行：
-npm run check:overlay -- --material=disabled
+npm run check:overlay -- --transparency=disabled
 ```
 
-脚本不更改系统设置、安装工具或运行个人插件。使用 `ORIEL_DEV_DATA_DIR` 和生成的本地网页、浏览布局／应用布局测试插件，产物放在 `target/overlay-check-*`，需要端口 1420 可用。默认程序为 `target/windows/debug/oriel.exe`，可用环境变量 `ORIEL_CHECK_EXE` 指向已有 debug 程序。覆盖五类弹窗、首页和插件入口、外侧点击、内部点击、拖出、Escape、保存保护、嵌套草稿／焦点、原生关闭与再次打开。连续 20 次暖开启测量点击至原生命令确认可交互的 P95，要求不超过 500 ms；这是待验收目标，当前没有 Windows 实测数据。
+脚本不更改系统设置、安装工具或运行个人插件。使用 `ORIEL_DEV_DATA_DIR` 和生成的本地网页、浏览布局／应用布局测试插件，产物放在 `target/overlay-check-*`，需要端口 1420 可用。默认程序为 `target/windows/debug/oriel.exe`，可用环境变量 `ORIEL_CHECK_EXE` 指向已有 debug 程序。覆盖八类宿主弹窗／菜单、首页和插件入口、外侧点击、内部点击、拖出、Escape、保存／密码清除保护、菜单转设置／编辑／移除确认、页签排序与键盘菜单、应用刷新／重试、嵌套草稿／焦点、原生关闭与再次打开。连续 20 次暖开启测量点击至原生命令确认可交互的 P95，要求不超过 500 ms；不同批次 Windows 实测结果分别见下文。
 
-隔离 debug 宿主在显示时读取当前底层 WebView2 controller 的实际 `IsVisible` 并记录日志；脚本同时检查页面加载次数和实例标记未改变。截图使用 Windows `CopyFromScreen` 捕获系统合成后的 Oriel 客户区，包含原生材质及底层页面；WebView 自身截图不能证明背景效果。材质可用／禁用的浅深主题截图需人工审查；移动、缩放、最大化、最小化恢复及跨不同物理 DPI 显示器的对齐仍须 Windows 人工验收。本轮未宣称原生材质、真实层叠、无重载或响应目标已通过。
+隔离 debug 宿主在显示时读取当前底层 WebView2 controller 的实际 `IsVisible` 并记录日志；脚本同时检查页面加载次数和实例标记未改变。截图使用 Windows `CopyFromScreen` 捕获系统合成后的 Oriel 客户区，包含透明遮罩及底层页面；WebView 自身截图不能证明背景效果。系统透明效果开启／关闭时的浅深主题截图需人工审查；移动、缩放、最大化、最小化恢复及跨不同物理 DPI 显示器的对齐仍须 Windows 人工验收。是否通过以对应批次的实际结果为准，控制器状态和命令回归不能代替透明合成视觉及物理 DPI 验收。
+
+### 网页创建后的背景空白回归（2026-10-28）
+
+用户报告首页正常，网页与插件页面打开说明、设置后背景空白。在 Windows 隔离 fixture 中复现：网页子 WebView 创建后，悬浮请求在 `show` 阶段返回“主窗口不存在。”，随后进入本地弹窗并隐藏网页。根因为 `get_webview_window("main")` 排除了已包含多个 WebView 的主窗口，而非主窗口真的关闭。改为按 `Window` 获取并处理归属、客户区同步与焦点，保留本地 main WebView 的独立焦点恢复。
+
+使用 Windows 现有依赖执行 `npm run build` 及 `cargo build --locked --manifest-path src-tauri/Cargo.toml --target-dir target/windows` 通过；随后通过 `build.ps1 -NoBundle` 生成最新 Windows Release 程序，未安装或替换正在运行的实例。隔离原生回归覆盖首页创建网页前后、浏览器与应用插件的设置／前置程序／说明、添加／编辑、保存期间关闭保护、外侧点击、内部点击、拖出、Escape、原生关闭、嵌套草稿与入口焦点返回。连续 20 次暖开启 P95 为 **34.4 ms**；显示时底层 controller 实际 `IsVisible` 为 true，网页实例标记和加载次数保持不变，未触发会话故障或本地回退。该数字只对应本机隔离 fixture。本机 `CopyFromScreen` 未通过 dialog 像素有效性校验，已拒绝保存并删除无效捕获；最终回归使用 `--skip-capture`，本轮不据此宣称原生磨砂视觉通过。
+
+验收脚本新增明确失败时立即输出原生原因及失败状态，并验证创建子 WebView 前后均可打开。系统合成截图按测试进程枚举窗口，核对前台 HWND、物理 DPI 坐标与不透明 dialog 的已知像素，无法确认画面来源时拒绝保存；可使用 `--skip-capture` 仅运行交互检查，并将结果明确标记为未做视觉验收。该批次的 Acrylic 方案已由下文透明遮罩方案替代；系统透明效果禁用、窗口移动缩放及不同物理 DPI 仍按实际 Windows 验收记录单列，不因状态检查通过而自动视为通过。
+
+### 2026-10-28 透明遮罩与局部弹窗迁移验证
+
+本轮删除原生 Acrylic 模块与显示前材质调用，整合已有多 WebView 主窗口身份修复，并将密码、应用操作及固定页签菜单迁入 Overlay。沿用原 lockfile 与平台各自依赖，未安装工具或运行个人插件。
+
+- WSL 隔离副本离线安装、`npm run build`（含 `vue-tsc --noEmit`）、`npm run check:ui-state` 通过；新增三类模式的无事件握手及入口身份检查，既有失败／超时／迟到确认与指针边界检查通过。
+- `rustc --test src-tauri/src/overlay_state.rs` 的 4 项状态机检查、`cargo test --locked --manifest-path src-tauri/Cargo.toml -p oriel-core` 的 55 项核心测试通过。
+- Windows 前端和 debug 宿主构建通过；`npm run check:overlay -- --skip-capture` 使用隔离 fixture 完成八类弹窗／菜单回归，20 次暖开启 P95 为 **41.0 ms**（最终补充检查批次）。底层 controller 保持可见，普通打开保持网页实例与加载次数；密码清除和显式刷新按预期重新加载。新增浅深遮罩色值／无全屏滤镜、非当前页签的键盘菜单焦点恢复与应用重试检查通过。
+- 同步更新 `check:browser` 的密码／页签菜单目标窗口与可见性断言，并对齐主题初始化时的旧配置迁移检查。补充执行在侧栏原生指针调宽处超时，输入日志混入真实鼠标移动，未到达本轮受影响的密码与菜单检查；因此该完整套件本轮未通过，不能用历史结果替代。相应迁移路径由上述 `check:overlay` 隔离回归覆盖。
+- 本轮未执行系统合成截图、系统透明效果开关／节电对照或跨物理 DPI 人工验收，不将 CSS／controller 检查视为视觉验收。未生成 Release 或安装包，也未替换运行中的个人实例。
+
+脚本的 `--transparency=enabled|disabled` 只记录手动设置的对照条件，默认 `unchecked`，不修改系统设置。正常路径统一要求 `material=transparent-css`，不再以 Acrylic 成功或材质降级作为通过条件；`--skip-capture` 明确只验收交互与 controller 可见性。
 
 ## 声明式插件 UI 插槽
 

@@ -2,7 +2,7 @@ import { ref } from 'vue'
 import { getDesktopApi } from './desktop'
 
 export interface OverlayShowOptions {
-  mode: 'settings' | 'add' | 'edit' | 'preparations' | 'help'
+  mode: 'settings' | 'add' | 'edit' | 'preparations' | 'help' | 'passwords' | 'tool-menu' | 'page-menu'
   entryId?: string
   confirmRemove?: boolean
 }

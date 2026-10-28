@@ -1,19 +1,18 @@
 <script setup lang="ts">
-import { computed, nextTick, onUnmounted, ref, watch, useTemplateRef } from 'vue'
+import { computed, ref, watch, useTemplateRef } from 'vue'
 import AppIcon from '../../../src/components/AppIcon.vue'
 import WindowControls from '../../../src/components/WindowControls.vue'
 import PluginHelp from '../../../src/components/PluginHelp.vue'
 import PluginHeaderActions from '../../../src/components/PluginHeaderActions.vue'
 import { useWebSession } from '../../../src/composables/useWebSession'
-import { hideWebSurface, type PluginViewProps, type WebEntry } from '../../../src/lib/workspace'
+import EntryActionDialog from '../../../src/components/EntryActionDialog.vue'
+import { useEntryOverlay } from '../../../src/composables/useEntryOverlay'
+import { type PluginViewProps, type WebEntry } from '../../../src/lib/workspace'
 
 const props = defineProps<PluginViewProps & { slotEntry?: WebEntry }>()
 const emit = defineEmits<{ edit: [entry: WebEntry]; settings: []; add: []; preparations: [entryId?: string] }>()
-const passwords = ref<HTMLDialogElement>()
-const passwordDialog = ref(false)
+const { active: passwordDialog, opening: passwordsOpening, error: passwordError, open, close: closePasswords } = useEntryOverlay(() => props.entry.id)
 const helpOpen = ref(false)
-const clearing = ref(false)
-const cleared = ref(false)
 const address = ref(props.entry.url ?? '')
 const dirtyAddress = ref(false)
 const surface = useTemplateRef<HTMLElement>('surface')
@@ -30,18 +29,7 @@ function browse(action: 'back' | 'forward' | 'reload' | 'stop') {
   dirtyAddress.value = false; address.value = state.value.url
   void run('web_action', { action })
 }
-async function openPasswords() {
-  passwordDialog.value = true; cleared.value = false; error.value = ''
-  try { await hideWebSurface(); await nextTick(); passwords.value?.showModal() }
-  catch (cause) { passwordDialog.value = false; error.value = String(cause) }
-}
-function closePasswords() { passwords.value?.close(); passwordDialog.value = false; clearing.value = false; cleared.value = false }
-async function clearPasswords() {
-  clearing.value = true
-  await run('web_clear_passwords')
-  cleared.value = !error.value; clearing.value = false
-}
-onUnmounted(() => passwords.value?.close())
+function openPasswords() { void open('passwords') }
 </script>
 
 <template>
@@ -64,7 +52,7 @@ onUnmounted(() => passwords.value?.close())
         <PluginHeaderActions :entry="slotEntry ?? entry" :busy="busy" :can-reload="available && Boolean(state.url)" @reload="browse('reload')" @settings="emit('settings')" @preparations="emit('preparations', entry.id)" />
         <button v-if="entry.preparation" class="plain-icon" type="button" aria-label="当前网页的前置程序" title="当前网页的前置程序" aria-haspopup="dialog" @click="emit('preparations', entry.id)"><AppIcon name="terminal" /></button>
         <PluginHelp :entry="entry" @active="helpOpen = $event" />
-        <button class="plain-icon" type="button" aria-label="账号密码" title="账号密码" :disabled="!available" @click="openPasswords"><AppIcon name="key" /></button>
+        <button class="plain-icon" type="button" aria-label="账号密码" title="账号密码" :disabled="!available || passwordsOpening" aria-haspopup="dialog" @click="openPasswords"><AppIcon name="key" /></button>
         <button v-if="entry.editable" class="plain-icon" type="button" aria-label="网页设置" title="网页设置" :disabled="!writable || busy" @click="emit('edit', entry)"><AppIcon name="settings" /></button>
         <button v-else class="plain-icon" type="button" aria-label="工作台设置" title="工作台设置" :disabled="!writable || busy" @click="emit('settings')"><AppIcon name="settings" /></button>
       </div>
@@ -83,13 +71,7 @@ onUnmounted(() => passwords.value?.close())
         <button class="text-button" type="button" :disabled="!writable" @click="emit('add')">添加网页</button>
       </div>
     </div>
-    <dialog ref="passwords" class="settings-dialog password-dialog" aria-labelledby="password-dialog-title" @cancel="clearing ? $event.preventDefault() : closePasswords()">
-      <header class="dialog-heading"><h1 id="password-dialog-title">账号密码</h1><button class="plain-icon" type="button" aria-label="关闭" :disabled="clearing" @click="closePasswords"><AppIcon name="close" /></button></header>
-      <p>登录时可选择保存账号密码，下次登录自动填充。</p>
-      <p class="field-help">清除仅影响此入口保存的密码，当前登录状态会保留。</p>
-      <p v-if="error" class="form-error" role="alert">{{ error }}</p>
-      <p v-if="cleared" class="form-success" role="status">已清除保存的密码。</p>
-      <footer class="dialog-actions"><button class="text-button danger" type="button" :disabled="clearing || cleared" @click="clearPasswords">{{ clearing ? '正在清除…' : '清除此入口的密码' }}</button><button class="primary-button" type="button" :disabled="clearing" @click="closePasswords">完成</button></footer>
-    </dialog>
+    <p v-if="passwordError" class="form-error" role="alert">{{ passwordError }}</p>
+    <EntryActionDialog v-if="passwordDialog" mode="passwords" :entry="entry" :workspace="workspace" :supported="supported" @close="closePasswords" />
   </section>
 </template>
